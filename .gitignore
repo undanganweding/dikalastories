@@ -10,3 +10,6 @@ coverage/
 # Runtime data dir — contains real API keys/secrets (credentials_secrets.json)
 # and runtime state. Never commit. App recreates these on demand.
 data/
+
+.vercel
+.env*
