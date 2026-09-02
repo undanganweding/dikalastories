@@ -28,7 +28,7 @@ if "%EXPORT_DIR%"=="" (
     echo    - file zip   contoh: D:\Web\my-export.zip
     echo    - folder     contoh: D:\Web\my-export-folder
     echo.
-    set /p EXPORT_DIR="  Path (enter = auto-detect): "
+    set /p EXPORT_DIR="  Path ^(enter = auto-detect^): "
 )
 
 if "%EXPORT_DIR%"=="" (
@@ -36,7 +36,7 @@ if "%EXPORT_DIR%"=="" (
     echo  [AUTO] Mencari zip terbaru di root project, D:\Web\ , dan Downloads...
     node "%~dp0apply-ai-studio-export.mjs" --preview
     echo.
-    echo  --- Daftar file yang akan disinkron (PREVIEW) di atas ---
+    echo  --- Daftar file yang akan disinkron ^(PREVIEW^) di atas ---
     echo  Kalau sudah yakin, jalankan lagi dan pilih mode COPY/FULL.
     goto :end
 )
@@ -73,7 +73,7 @@ if "%MODE%"=="2" (
 )
 
 if "%MODE%"=="3" (
-    set /p COMMIT_MSG="  Pesan commit (Enter = default): "
+    set /p COMMIT_MSG="  Pesan commit ^(Enter = default^): "
     if "!COMMIT_MSG!"=="" set "COMMIT_MSG=Update from AI Studio export"
     node "%~dp0apply-ai-studio-export.mjs" "%EXPORT_DIR%" --install --commit --message "!COMMIT_MSG!"
     goto :end
@@ -86,7 +86,7 @@ goto :end
 echo.
 set /p LANJUT="  Lanjut npm install + commit + push? (y/n): "
 if /i "%LANJUT%"=="y" (
-    set /p COMMIT_MSG="  Pesan commit (Enter = default): "
+    set /p COMMIT_MSG="  Pesan commit ^(Enter = default^): "
     if "!COMMIT_MSG!"=="" set "COMMIT_MSG=Update from AI Studio export"
     npm.cmd install
     git add -A
