@@ -5,6 +5,11 @@
  * Smart round-trip dari hasil export ZIP Google AI Studio ke project ini.
  *
  * Fitur:
+ *  - BISA nerima file .zip LANGSUNG (auto-extract ke folder temp) ATAU folder hasil ekstrak.
+ *  - AUTO-DETECT: kalau dipanggil tanpa argumen, cari .zip terbaru di:
+ *      1) Folder Downloads user
+ *      2) Root project
+ *      3) D:\Web\
  *  - Bandingkan hash file (export vs project) untuk DETEKSI file yang berubah.
  *  - Copy HANYA file source yang aman (src/, server/, dll) + file baru.
  *  - LINDUNGI file config penting (.env*, data/, vercel.json, api/index.ts,
@@ -14,12 +19,13 @@
  *  - Opsi `--install` jalankan npm install, `--commit` jalankan git commit+push.
  *
  * Usage:
- *   node apply-ai-studio-export.mjs "<folder export>" [--install] [--commit] [--message "msg"]
- *   node apply-ai-studio-export.mjs "<folder export>" --preview      (hanya deteksi, tidak copy)
+ *   node apply-ai-studio-export.mjs "<file.zip | folder export>" [--install] [--commit] [--message "msg"]
+ *   node apply-ai-studio-export.mjs --preview                        (auto-detect zip terbaru)
  */
 
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { createHash } from 'crypto';
 import { execSync } from 'child_process';
 
@@ -155,6 +161,72 @@ function mergeDependencies(exportDir, projectDir) {
 }
 
 // ---------------------------------------------------------------
+// Auto-detect .zip terbaru di folder umum
+// ---------------------------------------------------------------
+function getCandidateDirs() {
+  const dirs = [];
+  // 1) Downloads user
+  try { dirs.push(path.join(os.homedir(), 'Downloads')); } catch {}
+  // 2) Root project
+  dirs.push(process.cwd());
+  // 3) D:\Web\
+  dirs.push('D:\\Web\\');
+  // 4) AI Studio output folder
+  dirs.push(path.join(process.cwd(), 'ai-studio-export'));
+  return dirs;
+}
+
+function findNewestZip() {
+  const candidates = [];
+  for (const dir of getCandidateDirs()) {
+    if (!fs.existsSync(dir)) continue;
+    let entries = [];
+    try { entries = fs.readdirSync(dir); } catch { continue; }
+    for (const name of entries) {
+      if (name.toLowerCase().endsWith('.zip')) {
+        const full = path.join(dir, name);
+        try {
+          const st = fs.statSync(full);
+          candidates.push({ full, mtime: st.mtimeMs, name });
+        } catch {}
+      }
+    }
+  }
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.mtime - a.mtime);
+  return candidates[0];
+}
+
+// ---------------------------------------------------------------
+// Ekstrak zip ke folder temp (pakai PowerShell Expand-Archive agar
+// tidak tergantung library tambahan)
+// ---------------------------------------------------------------
+function extractZip(zipPath) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-studio-'));
+  const zipAbs = path.resolve(zipPath);
+  console.log(`  [ZIP] ${path.basename(zipPath)} -> ekstrak ke ${tmp}`);
+  try {
+    execSync(
+      `powershell -NoProfile -Command "Expand-Archive -LiteralPath '${zipAbs}' -DestinationPath '${tmp}' -Force"`,
+      { stdio: 'pipe' }
+    );
+    // Cari subfolder berisi package.json / src (zip kadang punya 1 folder pembungkus)
+    const entries = fs.readdirSync(tmp);
+    for (const e of entries) {
+      const sub = path.join(tmp, e);
+      if (fs.statSync(sub).isDirectory() && (fs.existsSync(path.join(sub, 'src')) || fs.existsSync(path.join(sub, 'server')) || fs.existsSync(path.join(sub, 'package.json')))) {
+        return sub;
+      }
+    }
+    return tmp;
+  } catch (e) {
+    console.error(`  [X] Gagal ekstrak zip: ${e.message}`);
+    console.error('  Coba ekstrak manual, lalu jalankan dengan folder.');
+    process.exit(1);
+  }
+}
+
+// ---------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------
 function main() {
@@ -166,12 +238,28 @@ function main() {
   const msgIdx = args.indexOf('--message');
   const commitMsg = msgIdx > -1 ? args[msgIdx + 1] : 'Update from AI Studio export';
 
+  // Jika tidak ada argumen path, auto-detect zip terbaru
   if (!src) {
-    console.error('Usage: node apply-ai-studio-export.mjs "<folder export>" [--preview] [--install] [--commit] [--message "msg"]');
-    process.exit(1);
+    const z = findNewestZip();
+    if (z) {
+      console.log(`  [AUTO] Tidak ada argumen. Pakai zip terbaru:`);
+      console.log(`        ${z.full} (${new Date(z.mtime).toLocaleString()})`);
+      src = z.full;
+    } else {
+      console.error('Tidak ada argumen dan tidak ketemu .zip. Beri path:');
+      console.error('  node apply-ai-studio-export.mjs "<file.zip | folder>"');
+      process.exit(1);
+    }
   }
 
   src = path.resolve(src);
+
+  // Jika input adalah file .zip, ekstrak dulu
+  let isZip = fs.existsSync(src) && fs.statSync(src).isFile() && src.toLowerCase().endsWith('.zip');
+  if (isZip) {
+    src = extractZip(src);
+  }
+
   if (!fs.existsSync(src)) {
     console.error(`Folder export tidak ditemukan: ${src}`);
     process.exit(1);
