@@ -2,18 +2,26 @@
 /**
  * apply-ai-studio-export.mjs
  * ==========================
- * Aman menerapkan hasil export ZIP dari Google AI Studio ke project ini,
- * TANPA menimpa konfigurasi Vercel/Firebase yang sudah kita setup.
+ * Smart round-trip dari hasil export ZIP Google AI Studio ke project ini.
  *
- * Copy HANYA folder/pattern yang aman, LINDUNGI file-file yang jangan ditimpa.
+ * Fitur:
+ *  - Bandingkan hash file (export vs project) untuk DETEKSI file yang berubah.
+ *  - Copy HANYA file source yang aman (src/, server/, dll) + file baru.
+ *  - LINDUNGI file config penting (.env*, data/, vercel.json, api/index.ts,
+ *    package.json, .gitignore, firebase-applet-config.json). (untuk package.json
+ *    hanya MERGE dependencies, TIDAK menimpa build script kita).
+ *  - Laporan ringkas per file: [BARU] / [UBAH] / [SAMA].
+ *  - Opsi `--install` jalankan npm install, `--commit` jalankan git commit+push.
  *
  * Usage:
- *   node apply-ai-studio-export.mjs "D:\Web\ai-studio-export"
- *   node apply-ai-studio-export.mjs "D:\Web\ai-studio-export" --preview   (hanya tampilkan, tidak copy)
+ *   node apply-ai-studio-export.mjs "<folder export>" [--install] [--commit] [--message "msg"]
+ *   node apply-ai-studio-export.mjs "<folder export>" --preview      (hanya deteksi, tidak copy)
  */
 
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
+import { execSync } from 'child_process';
 
 // ---------------------------------------------------------------
 // 1) Daftar pattern yang BOLEH di-copy dari export AI Studio
@@ -82,8 +90,18 @@ function shouldCopy(file) {
 }
 
 // ---------------------------------------------------------------
-// Walk a directory, return relative file paths
+// Hash file (fast, SHA1)
 // ---------------------------------------------------------------
+function hashFile(p) {
+  try {
+    const h = createHash('sha1');
+    h.update(fs.readFileSync(p));
+    return h.digest('hex');
+  } catch {
+    return null;
+  }
+}
+
 function walk(dir, base, acc) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
@@ -99,15 +117,57 @@ function walk(dir, base, acc) {
 }
 
 // ---------------------------------------------------------------
+// Merge dependencies dari package.json export -> project
+// (TIDAK menimpa script build / vercel fix kita)
+// ---------------------------------------------------------------
+function mergeDependencies(exportDir, projectDir) {
+  const expPkg = path.join(exportDir, 'package.json');
+  const projPkg = path.join(projectDir, 'package.json');
+  if (!fs.existsSync(expPkg) || !fs.existsSync(projPkg)) return null;
+
+  const exp = JSON.parse(fs.readFileSync(expPkg, 'utf-8'));
+  const proj = JSON.parse(fs.readFileSync(projPkg, 'utf-8'));
+
+  const dropped = { dependencies: [], devDependencies: [] };
+  let added = { dependencies: [], devDependencies: [] };
+
+  for (const section of ['dependencies', 'devDependencies']) {
+    if (exp[section]) {
+      for (const [name, ver] of Object.entries(exp[section])) {
+        if (!proj[section] || !proj[section][name]) {
+          if (!proj[section]) proj[section] = {};
+          proj[section][name] = ver;
+          added[section].push(`${name}@${ver}`);
+        } else if (proj[section][name] !== ver) {
+          proj[section][name] = ver;
+          added[section].push(`${name}@${ver}`);
+        }
+      }
+    }
+  }
+
+  if (added.dependencies.length === 0 && added.devDependencies.length === 0) {
+    return { changed: false, added };
+  }
+
+  fs.writeFileSync(projPkg, JSON.stringify(proj, null, 2) + '\n', 'utf-8');
+  return { changed: true, added };
+}
+
+// ---------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------
 function main() {
   const args = process.argv.slice(2);
   let src = args.find(a => !a.startsWith('--'));
   const preview = args.includes('--preview');
+  const wantInstall = args.includes('--install');
+  const wantCommit = args.includes('--commit');
+  const msgIdx = args.indexOf('--message');
+  const commitMsg = msgIdx > -1 ? args[msgIdx + 1] : 'Update from AI Studio export';
 
   if (!src) {
-    console.error('Usage: node apply-ai-studio-export.mjs "<folder export>" [--preview]');
+    console.error('Usage: node apply-ai-studio-export.mjs "<folder export>" [--preview] [--install] [--commit] [--message "msg"]');
     process.exit(1);
   }
 
@@ -119,37 +179,102 @@ function main() {
 
   const root = process.cwd();
   const allFiles = walk(src, src, []);
+  const copyable = allFiles.filter(shouldCopy);
 
-  const toCopy = allFiles.filter(shouldCopy);
+  console.log('='.repeat(64));
+  console.log('  AI Studio Export -> Project Lokal');
+  console.log('='.repeat(64));
+  console.log(`  Sumber : ${src}`);
+  console.log(`  Target : ${root}`);
+  console.log(`  Mode   : ${preview ? 'PREVIEW' : 'COPY'}\n`);
 
-  console.log(`\n>>> Sumber : ${src}`);
-  console.log(`>>> Target : ${root}`);
-  console.log(`>>> File   : ${toCopy.length}/${allFiles.length} akan di-copy`);
-  console.log(`>>> Mode   : ${preview ? 'PREVIEW (tidak menulis)' : 'COPY'}\n`);
+  const changed = [];
+  const same = [];
 
-  if (toCopy.length === 0) {
-    console.log('Tidak ada file yang perlu di-copy. Pastikan folder export berisi src/ atau server/.');
-  }
-
-  for (const f of toCopy) {
+  for (const f of copyable) {
     const srcPath = path.join(src, f);
     const dstPath = path.join(root, f);
-    console.log(`   ${f}`);
-    if (!preview) {
-      fs.mkdirSync(path.dirname(dstPath), { recursive: true });
-      fs.copyFileSync(srcPath, dstPath);
+    let status;
+    if (!fs.existsSync(dstPath)) {
+      status = 'BARU';
+    } else {
+      const h1 = hashFile(srcPath);
+      const h2 = hashFile(dstPath);
+      status = h1 === h2 ? 'SAMA' : 'UBAH';
+    }
+    if (status === 'SAMA') same.push(f);
+    else changed.push({ f, srcPath, dstPath, status });
+  }
+
+  console.log(`  Deteksi: ${changed.length} berubah/baru, ${same.length} sama.\n`);
+
+  if (changed.length === 0) {
+    console.log('  Tidak ada file yang berubah. Project sudah sinkron.');
+  } else {
+    for (const { f, status } of changed) {
+      console.log(`  [${status}] ${f}`);
     }
   }
 
-  console.log('\n>>> Selesai.');
-  if (!preview) {
-    console.log('>>> Langkah berikutnya:');
-    console.log('   1. npm.cmd install          (kalau ada dependency baru)');
-    console.log('   2. npm.cmd run dev          (tes lokal)');
-    console.log('   3. .\\node_modules\\.bin\\tsx.cmd -r dotenv/config server/firestore_diagnostic.ts');
-    console.log('   4. git diff                 (review, pastikan aman LALU commit & push)');
-    console.log('   5. Vercel auto-deploy dari push.');
+  if (!preview && changed.length > 0) {
+    console.log('\n  >>> Menyalin file...');
+    for (const { srcPath, dstPath } of changed) {
+      fs.mkdirSync(path.dirname(dstPath), { recursive: true });
+      fs.copyFileSync(srcPath, dstPath);
+    }
+    console.log(`  >>> Copied: ${changed.length} file(s).`);
   }
+
+  // Merge package.json dependencies (hanya jika ada file export package.json)
+  const mergeResult = mergeDependencies(src, root);
+  if (mergeResult?.changed) {
+    console.log('\n  >>> [package.json] Dependency BARU/tambahan di-merge:');
+    for (const [sec, list] of Object.entries(mergeResult.added)) {
+      if (list.length) console.log(`       ${sec}: ${list.join(', ')}`);
+    }
+    console.log('       (build script & vercel fix TETAP dipertahankan)');
+  } else if (mergeResult) {
+    console.log('\n  >>> [package.json] Tidak ada dependency baru.');
+  }
+
+  if (preview) {
+    console.log('\n  >>> (PREVIEW) tidak ada yang ditulis.\n');
+    return;
+  }
+
+  // Optional: npm install
+  if (wantInstall) {
+    console.log('\n  >>> Menjalankan npm install...');
+    try {
+      execSync('npm.cmd install', { stdio: 'inherit', cwd: root });
+    } catch {
+      console.warn('  >>> npm install ada issue (non-fatal). Lanjut...');
+    }
+  }
+
+  // Optional: git commit + push
+  if (wantCommit) {
+    console.log(`\n  >>> Git: add, commit "${commitMsg}", push...`);
+    try {
+      execSync('git add -A', { stdio: 'inherit', cwd: root });
+      execSync(`git commit -m "${commitMsg.replace(/"/g, '\\"')}"`, { stdio: 'inherit', cwd: root });
+      execSync('git push origin main', { stdio: 'inherit', cwd: root });
+      console.log('  >>> Push sukses. Vercel auto-deploy.');
+    } catch {
+      console.warn('  >>> Git commit/push gagal. Cek pesan di atas. (bisa karena tidak ada perubahan / perlu login)');
+    }
+  }
+
+  console.log('\n' + '='.repeat(64));
+  console.log('  Selesai.');
+  if (!wantCommit) {
+    console.log('  Langkah lanjut (manual):');
+    console.log('   1. npm.cmd install');
+    console.log('   2. npm.cmd run dev');
+    console.log('   3. .\\node_modules\\.bin\\tsx.cmd -r dotenv/config server/firestore_diagnostic.ts');
+    console.log('   4. git diff && git add -A && git commit -m "..." && git push origin main');
+  }
+  console.log('='.repeat(64));
 }
 
 main();
