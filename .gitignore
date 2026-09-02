@@ -13,3 +13,6 @@ data/
 
 .vercel
 .env*
+
+.vercel
+.env*
