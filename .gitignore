@@ -14,3 +14,6 @@ data/
 .vercel
 .env*
 
+# Artefak workspace sync (file kosong 0-byte yang muncul otomatis)
+Dikalastory
+
