@@ -16,26 +16,34 @@ echo   5. Opsional: npm install + git commit + push (Vercel auto-deploy)
 echo.
 
 REM ------------------------------------------------------------
-REM 1) Tentukan folder export
+REM 1) Tentukan sumber: zip/folder export
+REM    - Bisa dikasih argumen (drag&drop zip ke bat / ketik path)
+REM    - Atau kosongkan -> AUTO-DETECT zip terbaru (root, D:\Web, Downloads)
 REM ------------------------------------------------------------
 set "EXPORT_DIR="
 if not "%~1"=="" set "EXPORT_DIR=%~1"
 
 if "%EXPORT_DIR%"=="" (
-    echo  Masukkan path folder hasil ekstrak ZIP AI Studio
-    echo  contoh: D:\Web\ai-studio-export
+    echo  Biarkan kosong utk AUTO-DETECT zip terbaru, atau isi path:
+    echo    - file zip   contoh: D:\Web\my-export.zip
+    echo    - folder     contoh: D:\Web\my-export-folder
     echo.
-    set /p EXPORT_DIR="  Path folder export: "
+    set /p EXPORT_DIR="  Path (enter = auto-detect): "
 )
 
 if "%EXPORT_DIR%"=="" (
-    echo  [X] Path kosong. Dibatalkan.
-    pause
-    exit /b 1
+    echo.
+    echo  [AUTO] Mencari zip terbaru di root project, D:\Web\ , dan Downloads...
+    node "%~dp0apply-ai-studio-export.mjs" --preview
+    echo.
+    echo  --- Daftar file yang akan disinkron (PREVIEW) di atas ---
+    echo  Kalau sudah yakin, jalankan lagi dan pilih mode COPY/FULL.
+    goto :end
 )
 
 if not exist "%EXPORT_DIR%" (
-    echo  [X] Folder tidak ditemukan: %EXPORT_DIR%
+    echo  [X] Path tidak ditemukan: %EXPORT_DIR%
+    echo  Catatan: untuk folder, kasih path folder hasil ekstrak; untuk zip, kasih path file .zip.
     pause
     exit /b 1
 )
