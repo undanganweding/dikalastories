@@ -439,6 +439,7 @@ CREATE TABLE IF NOT EXISTS ai_models (
   enabled BOOLEAN NOT NULL DEFAULT true,
   context_window INTEGER,
   created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
   PRIMARY KEY (provider_id, id)
 );
 
@@ -478,6 +479,106 @@ CREATE TABLE IF NOT EXISTS ai_routing_policies (
   enabled BOOLEAN NOT NULL DEFAULT true,
   created_at BIGINT NOT NULL
 );
+
+-- Control-plane telemetry and learning tables. These are additive and preserve
+-- the legacy ai_usage table used by the compatibility adapter.
+CREATE TABLE IF NOT EXISTS ai_usage_logs (
+  id TEXT PRIMARY KEY,
+  request_id TEXT,
+  provider_id TEXT,
+  model_id TEXT,
+  task_class TEXT,
+  status TEXT NOT NULL,
+  tokens JSONB NOT NULL DEFAULT '{}'::jsonb,
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS ai_telemetry (
+  id TEXT PRIMARY KEY,
+  trace_id TEXT NOT NULL,
+  span_id TEXT NOT NULL,
+  agent_name TEXT NOT NULL,
+  task_class TEXT,
+  provider_id TEXT,
+  model_id TEXT,
+  status TEXT NOT NULL,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  total_tokens INTEGER,
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS adaptive_memory (
+  id BIGSERIAL PRIMARY KEY,
+  model_id TEXT NOT NULL,
+  task_class TEXT NOT NULL,
+  sample_count INTEGER NOT NULL DEFAULT 0,
+  average_score NUMERIC NOT NULL DEFAULT 0,
+  quality_trend NUMERIC NOT NULL DEFAULT 0,
+  reliability_trend NUMERIC NOT NULL DEFAULT 0,
+  last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (model_id, task_class)
+);
+
+CREATE TABLE IF NOT EXISTS decision_feedback (
+  id BIGSERIAL PRIMARY KEY,
+  model_id TEXT NOT NULL,
+  task_class TEXT NOT NULL,
+  success BOOLEAN NOT NULL,
+  confidence NUMERIC NOT NULL DEFAULT 0,
+  reputation_score NUMERIC NOT NULL DEFAULT 85,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS calibration_records (
+  id BIGSERIAL PRIMARY KEY,
+  model_id TEXT NOT NULL,
+  task_class TEXT NOT NULL,
+  total_decisions INTEGER NOT NULL DEFAULT 0,
+  successful_decisions INTEGER NOT NULL DEFAULT 0,
+  failed_decisions INTEGER NOT NULL DEFAULT 0,
+  reputation_score NUMERIC NOT NULL DEFAULT 85,
+  recent_accuracy NUMERIC NOT NULL DEFAULT 100,
+  drift_detected BOOLEAN NOT NULL DEFAULT false,
+  last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (model_id, task_class)
+);
+
+CREATE TABLE IF NOT EXISTS cost_records (
+  id BIGSERIAL PRIMARY KEY,
+  request_id TEXT,
+  model_id TEXT,
+  provider_id TEXT,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  total_tokens INTEGER NOT NULL DEFAULT 0,
+  estimated_cost_usd NUMERIC NOT NULL DEFAULT 0,
+  budget_state TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_usage_logs_created_at ON ai_usage_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_telemetry_created_at ON ai_telemetry(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_telemetry_model_task ON ai_telemetry(model_id, task_class);
+CREATE INDEX IF NOT EXISTS idx_adaptive_memory_model_task ON adaptive_memory(model_id, task_class);
+CREATE INDEX IF NOT EXISTS idx_decision_feedback_model_task ON decision_feedback(model_id, task_class);
+CREATE INDEX IF NOT EXISTS idx_calibration_records_model_task ON calibration_records(model_id, task_class);
+CREATE INDEX IF NOT EXISTS idx_cost_records_created_at ON cost_records(created_at DESC);
 
 -- ============================================================================
 -- 5. ROW LEVEL SECURITY (RLS) SETUP
