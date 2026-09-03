@@ -4,6 +4,7 @@ import App from './App';
 import './index.css';
 import { WindowManagerProvider } from './context/WindowManagerContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { Analytics } from '@vercel/analytics/react';
 
 const rootElement = document.getElementById('root');
 if (rootElement) {
@@ -12,6 +13,7 @@ if (rootElement) {
       <ErrorBoundary>
         <WindowManagerProvider>
           <App />
+          <Analytics />
         </WindowManagerProvider>
       </ErrorBoundary>
     </StrictMode>
