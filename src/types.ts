@@ -1967,5 +1967,95 @@ export interface FullStoryPackage {
   updatedAt: string;
 }
 
+// ==========================================
+// AI Infrastructure Domain (Phase 1 Schema Foundation)
+// ==========================================
+
+export interface AIProvider {
+  id: string;
+  name: string;
+  type: 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'xai' | 'openai-compatible';
+  baseUrl?: string;
+  enabled: boolean;
+  capabilities: {
+    text: boolean;
+    vision: boolean;
+    image: boolean;
+    video: boolean;
+  };
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AICredential {
+  id: string;
+  providerId: string;
+  name: string;
+  maskedKey: string;
+  encryptedSecret: string;
+  googleMetadata?: {
+    projectId?: string;
+    firebaseProjectId?: string;
+    clientEmail?: string;
+  };
+  status: 'active' | 'rate_limited' | 'exhausted' | 'invalid_auth' | 'disabled';
+  priority: number;
+  weight: number;
+  lastUsedAt?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AIModel {
+  id: string;
+  providerId: string;
+  displayName: string;
+  tier: 'lite' | 'flash' | 'pro';
+  capabilities: string[];
+  enabled: boolean;
+  contextWindow?: number;
+  createdAt: number;
+}
+
+export interface AIUsage {
+  id: string;
+  credentialId: string;
+  modelId: string;
+  providerId?: string;
+  model?: string;
+  requestType?: string;
+  stage?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  latencyMs: number;
+  success: boolean;
+  errorType?: string;
+  timestamp: number;
+}
+
+export interface AIHealth {
+  credentialId: string;
+  status: 'healthy' | 'degraded' | 'down';
+  consecutiveFailures: number;
+  successRate: number;
+  cooldownUntil?: number;
+  lastError?: string;
+  updatedAt: number;
+}
+
+export interface AIRoutingPolicy {
+  id: string;
+  taskType: string;
+  preferredModelIds: string[];
+  fallbackModelIds: string[];
+  strategy: 'priority' | 'round_robin' | 'lowest_latency';
+  enabled: boolean;
+  createdAt: number;
+}
+
+
 
 

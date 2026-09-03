@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { aiInfrastructureRouter } from './routes/ai_infrastructure_routes';
 import { db } from './db';
 import {
   runOrchestratedPipeline,
@@ -124,6 +125,9 @@ function broadcastSSE(projectId: string, data: any) {
 apiRouter.get('/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
+
+// AI Infrastructure Control Plane API routes mounted under /api/ai
+apiRouter.use('/ai', aiInfrastructureRouter);
 
 // Capability check for Gemini Omni
 apiRouter.get('/capabilities/omni', async (req: Request, res: Response) => {

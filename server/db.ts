@@ -16,19 +16,27 @@ import {
   CharacterContinuityState,
   ContinuitySnapshot,
   ApprovedCostumeTransition,
+  AIProvider,
+  AICredential,
+  AIModel,
+  AIUsage,
+  AIHealth,
+  AIRoutingPolicy,
 } from '../src/types';
 import { DEFAULT_NARRATIVE_STYLE_CONFIG, recommendSceneTone } from './narrative_tone';
 import { createCharacterContinuityState } from './continuity_engine';
 import { synthesizeStoryArchitectureForLegacyProject, deriveBeatsForScene } from './story_architecture';
 import { getFirestore, isFirestoreConfigured, getDatabaseId } from './firebase_admin';
 import { sceneToVirtualShotAdapter } from './scene_adapter';
+import { supabaseDb } from './db/supabase_db';
+import { isSupabaseConfigured } from './db/supabase_client';
 
 // ---------------------------------------------------------------------------
 // Backend selection
 // ---------------------------------------------------------------------------
 const IS_PRODUCTION = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 
-if (IS_PRODUCTION && !isFirestoreConfigured()) {
+if (IS_PRODUCTION && process.env.SUPABASE_ENABLED !== 'true' && !isFirestoreConfigured()) {
   console.warn(
     '[WARN] Firestore is not configured for Vercel deployment. ' +
     'Set FIREBASE_PROJECT_ID or FIREBASE_CLIENT_EMAIL & FIREBASE_PRIVATE_KEY for persistent storage. ' +
@@ -36,7 +44,10 @@ if (IS_PRODUCTION && !isFirestoreConfigured()) {
   );
 }
 
-const USE_FIRESTORE = isFirestoreConfigured();
+const USE_FIRESTORE = process.env.FORCE_LOCAL_DB === 'true' ? false : isFirestoreConfigured();
+console.log(
+  `[DB INIT] SUPABASE_ENABLED=${process.env.SUPABASE_ENABLED} FORCE_LOCAL_DB=${process.env.FORCE_LOCAL_DB} isFirestoreConfigured=${isFirestoreConfigured()} isSupabaseConfigured=${isSupabaseConfigured()} USE_FIRESTORE=${USE_FIRESTORE}`
+);
 
 // ---------------------------------------------------------------------------
 // JSON fallback backend (local development / tests / fallback)
@@ -58,6 +69,12 @@ interface FirestoreState {
   story_architectures: Record<string, StoryArchitecture>;
   continuity_states: Record<string, CharacterContinuityState[]>;
   continuity_snapshots: Record<string, ContinuitySnapshot>;
+  ai_providers: Record<string, AIProvider>;
+  ai_credentials: Record<string, AICredential>;
+  ai_models: Record<string, AIModel>;
+  ai_usage: Record<string, AIUsage>;
+  ai_health: Record<string, AIHealth>;
+  ai_routing_policies: Record<string, AIRoutingPolicy>;
 }
 
 function emptyState(): FirestoreState {
@@ -75,6 +92,12 @@ function emptyState(): FirestoreState {
     story_architectures: {},
     continuity_states: {},
     continuity_snapshots: {},
+    ai_providers: {},
+    ai_credentials: {},
+    ai_models: {},
+    ai_usage: {},
+    ai_health: {},
+    ai_routing_policies: {},
   };
 }
 
@@ -215,7 +238,7 @@ export function sanitizeProjectForStorage(project: Project): Project {
   return copy;
 }
 
-function attachEphemeralApiKey(project: Project | null): Project | null {
+export function attachEphemeralApiKey(project: Project | null): Project | null {
   if (!project) return null;
   if (!project.reasoning_model_preferences) {
     const primaryModelId = project.reasoning_config?.model_id || project.ai_model || 'gemini-3.7-flash';
@@ -337,9 +360,9 @@ async function queryWhereSorted<T>(
 }
 
 // ---------------------------------------------------------------------------
-// DB adapter
+// Firestore / local JSON adapter
 // ---------------------------------------------------------------------------
-export const db = {
+export const firestoreDb = {
   // --- Projects ---
   async saveProject(project: Project): Promise<Project> {
     if (!USE_FIRESTORE) {
@@ -1369,4 +1392,57 @@ export const db = {
       asset_graph: project.asset_graph || null,
     };
   },
+
+  // --- AI Infrastructure Domain Methods ---
+  async getProviders(): Promise<AIProvider[]> {
+    if (!USE_FIRESTORE) return Object.values(jsonState.ai_providers || {});
+    const snap = await colRef(getFirestore(), 'ai_providers').get();
+    return snap.docs.map((d: any) => ({ ...(d.data() as AIProvider), id: d.id }));
+  },
+  async getProvider(id: string): Promise<AIProvider | null> {
+    if (!USE_FIRESTORE) return jsonState.ai_providers?.[id] || null;
+    return getDocData<AIProvider>(getFirestore(), 'ai_providers', id);
+  },
+  async saveProvider(provider: AIProvider): Promise<AIProvider> {
+    if (!USE_FIRESTORE) { jsonState.ai_providers[provider.id] = provider; saveJsonState(jsonState); return provider; }
+    await docRef(getFirestore(), 'ai_providers', provider.id).set(sanitizeForFirestore(provider)); return provider;
+  },
+  async deleteProvider(id: string): Promise<boolean> {
+    if (!USE_FIRESTORE) { const exists = Boolean(jsonState.ai_providers?.[id]); delete jsonState.ai_providers?.[id]; if (exists) saveJsonState(jsonState); return exists; }
+    await docRef(getFirestore(), 'ai_providers', id).delete(); return true;
+  },
+  async getCredentials(): Promise<AICredential[]> {
+    if (!USE_FIRESTORE) return Object.values(jsonState.ai_credentials || {});
+    const snap = await colRef(getFirestore(), 'ai_credentials').get(); return snap.docs.map((d: any) => ({ ...(d.data() as AICredential), id: d.id }));
+  },
+  async getCredential(id: string): Promise<AICredential | null> { return USE_FIRESTORE ? getDocData<AICredential>(getFirestore(), 'ai_credentials', id) : jsonState.ai_credentials?.[id] || null; },
+  async saveCredential(value: AICredential): Promise<AICredential> { if (!USE_FIRESTORE) { jsonState.ai_credentials[value.id] = value; saveJsonState(jsonState); return value; } await docRef(getFirestore(), 'ai_credentials', value.id).set(sanitizeForFirestore(value)); return value; },
+  async deleteCredential(id: string): Promise<boolean> { if (!USE_FIRESTORE) { const exists = Boolean(jsonState.ai_credentials?.[id]); delete jsonState.ai_credentials?.[id]; if (exists) saveJsonState(jsonState); return exists; } await docRef(getFirestore(), 'ai_credentials', id).delete(); return true; },
+  async getModels(): Promise<AIModel[]> { if (!USE_FIRESTORE) return Object.values(jsonState.ai_models || {}); const snap = await colRef(getFirestore(), 'ai_models').get(); return snap.docs.map((d: any) => ({ ...(d.data() as AIModel) })); },
+  async getModel(id: string, providerId?: string): Promise<AIModel | null> { if (!USE_FIRESTORE) return Object.values(jsonState.ai_models || {}).find(m => m.id === id && (!providerId || m.providerId === providerId)) || null; return getDocData<AIModel>(getFirestore(), 'ai_models', providerId ? `${providerId}__${id}` : id); },
+  async saveModel(model: AIModel): Promise<AIModel> { const key = `${model.providerId || 'google'}::${model.id}`; if (!USE_FIRESTORE) { jsonState.ai_models[key] = model; saveJsonState(jsonState); return model; } await docRef(getFirestore(), 'ai_models', `${model.providerId || 'google'}__${model.id}`).set(sanitizeForFirestore(model)); return model; },
+  async deleteModel(id: string, providerId?: string): Promise<boolean> { if (!USE_FIRESTORE) { const key = `${providerId || 'google'}::${id}`; const exists = Boolean(jsonState.ai_models?.[key]); delete jsonState.ai_models?.[key]; if (exists) saveJsonState(jsonState); return exists; } await docRef(getFirestore(), 'ai_models', providerId ? `${providerId}__${id}` : id).delete(); return true; },
+  async getUsages(limitCount = 100): Promise<AIUsage[]> { if (!USE_FIRESTORE) return Object.values(jsonState.ai_usage || {}).sort((a, b) => b.timestamp - a.timestamp).slice(0, limitCount); const snap = await colRef(getFirestore(), 'ai_usage').orderBy('timestamp', 'desc').limit(limitCount).get(); return snap.docs.map((d: any) => ({ ...(d.data() as AIUsage), id: d.id })); },
+  async saveUsage(value: AIUsage): Promise<AIUsage> { if (!USE_FIRESTORE) { jsonState.ai_usage[value.id] = value; saveJsonState(jsonState); return value; } await docRef(getFirestore(), 'ai_usage', value.id).set(sanitizeForFirestore(value)); return value; },
+  async clearUsages(): Promise<boolean> { if (!USE_FIRESTORE) { jsonState.ai_usage = {}; saveJsonState(jsonState); return true; } const snap = await colRef(getFirestore(), 'ai_usage').get(); const batch = getFirestore().batch(); snap.docs.forEach((d: any) => batch.delete(d.ref)); await batch.commit(); return true; },
+  async getHealth(id: string): Promise<AIHealth | null> { return USE_FIRESTORE ? getDocData<AIHealth>(getFirestore(), 'ai_health', id) : jsonState.ai_health?.[id] || null; },
+  async saveHealth(value: AIHealth): Promise<AIHealth> { if (!USE_FIRESTORE) { jsonState.ai_health[value.credentialId] = value; saveJsonState(jsonState); return value; } await docRef(getFirestore(), 'ai_health', value.credentialId).set(sanitizeForFirestore(value)); return value; },
+  async getRoutingPolicies(): Promise<AIRoutingPolicy[]> { if (!USE_FIRESTORE) return Object.values(jsonState.ai_routing_policies || {}); const snap = await colRef(getFirestore(), 'ai_routing_policies').get(); return snap.docs.map((d: any) => ({ ...(d.data() as AIRoutingPolicy), id: d.id })); },
+  async saveRoutingPolicy(value: AIRoutingPolicy): Promise<AIRoutingPolicy> { if (!USE_FIRESTORE) { jsonState.ai_routing_policies[value.id] = value; saveJsonState(jsonState); return value; } await docRef(getFirestore(), 'ai_routing_policies', value.id).set(sanitizeForFirestore(value)); return value; },
 };
+
+export function getDatabaseDriver(): typeof firestoreDb {
+  if (process.env.SUPABASE_ENABLED === 'true') {
+    if (!isSupabaseConfigured()) throw new Error('[SUPABASE FAIL-CLOSED] Missing Supabase configuration.');
+    return supabaseDb as unknown as typeof firestoreDb;
+  }
+  return firestoreDb;
+}
+
+export const db: typeof firestoreDb = new Proxy({} as typeof firestoreDb, {
+  get(_target, prop: string | symbol) {
+    const driver = getDatabaseDriver();
+    const value = (driver as any)[prop];
+    return typeof value === 'function' ? value.bind(driver) : value;
+  },
+});

@@ -1042,7 +1042,9 @@ const isMain = typeof require !== 'undefined'
   : (typeof import.meta !== 'undefined' && import.meta.url === `file://${process.argv[1]}`);
 
 if (isMain) {
-  console.log('\n================================================================');
+  (async () => {
+    await import('./isolate_test_env.js');
+    console.log('\n================================================================');
   console.log('  SINEMA PHASE 4.0 — UNIFIED PRODUCTION PROMPT CONTRACT SUITE  ');
   console.log('================================================================\n');
 
@@ -1064,4 +1066,5 @@ if (isMain) {
   if (!summary.success) {
     process.exit(1);
   }
+  })();
 }

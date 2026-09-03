@@ -1,3 +1,4 @@
+import './isolate_test_env';
 import fs from 'fs';
 import path from 'path';
 import { createApp } from './app';

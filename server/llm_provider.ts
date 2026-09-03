@@ -22,6 +22,8 @@ import {
   isModelAvailable,
 } from './adaptive_router';
 import { credentialManager } from './credential_manager';
+import { quotaRouter } from './ai_infrastructure/quota_router';
+import { aiGateway } from './ai_infrastructure/ai_gateway';
 import { geminiProjectRouter, TaskType as GTaskType } from './gemini_project_router';
 import {
   getTaskWeight,
@@ -708,19 +710,13 @@ export async function executeLLMRequest(
   }
 
   const stage = options.stage || 'GENERAL';
-  const taskProfile = DEFAULT_TASK_PROFILES[stage] || { task: 'general', tier: 'general_reasoning' };
   const prefs = options.modelPreferences || (options.reasoningConfig as any)?.modelPreferences;
   const mode = prefs?.mode || 'fixed';
-  const forceModel = prefs?.force_model || false;
 
   const effectivePrimary = resolveEffectiveModelForStage(stage, prefs);
 
-  const requestedProvider = options.reasoningConfig?.provider_type || String(effectivePrimary.provider) || 'google';
-  
-  let requestedModel = options.reasoningConfig?.model_id || effectivePrimary.model_id;
-  if (mode === 'adaptive' && options.model) {
-    requestedModel = options.model;
-  } else if (mode === 'custom') {
+  let requestedModel = options.reasoningConfig?.model_id || options.model || effectivePrimary.model_id;
+  if (mode === 'custom') {
     requestedModel = effectivePrimary.model_id;
   }
 
@@ -772,139 +768,52 @@ export async function executeLLMRequest(
     };
   }
 
-  const modelsToTry: { provider: string; model_id: string; isFallback: boolean }[] = [];
-
-  if (mode === 'adaptive' && prefs?.fallback_policy === 'smart' && !forceModel) {
-    const weight = getTaskWeight(stage);
-    const sequence = getDirectionalRollingSequence(requestedProvider, weight, requestedModel);
-    for (const modelId of sequence) {
-      modelsToTry.push({
-        provider: requestedProvider,
-        model_id: modelId,
-        isFallback: modelId !== requestedModel,
-      });
-    }
-  } else {
-    modelsToTry.push({
-      provider: requestedProvider,
-      model_id: requestedModel,
-      isFallback: false,
-    });
-  }
-
-  // Retrieve or create run-scoped availability snapshot
   const runId = (options.modelPreferences as any)?.runId || `run_${stage}_${options.entityId || 'global'}`;
-  const runSnapshot = armoOrchestrator.getOrCreateRun(runId);
 
-  let lastError: any = null;
+  try {
+    const gatewayResponse = await aiGateway.generate({
+      model: requestedModel,
+      prompt: options.prompt,
+      systemInstruction: options.systemInstruction,
+      responseSchema: options.responseSchema,
+      maxTokens: options.maxOutputTokens,
+      temperature: options.temperature ?? 0.3,
+      agentName: stage,
+      task: stage,
+      providerId: options.reasoningConfig?.provider_type,
+    });
 
-  for (let i = 0; i < modelsToTry.length; i++) {
-    const candidate = modelsToTry[i];
-    const isPrimaryAttempt = i === 0;
+    armoOrchestrator.recordTransition(
+      runId,
+      stage,
+      1,
+      requestedModel,
+      gatewayResponse.model,
+      gatewayResponse.model,
+      gatewayResponse.credentialId,
+      'Primary execution attempt via AI Gateway',
+      'SUCCESS'
+    );
 
-    const activeCreds = credentialManager.getOrderedCandidateCredentials(candidate.provider);
-    if (activeCreds.length === 0) {
-      console.warn(`[ARMO Router] Skipping candidate ${candidate.model_id} (${candidate.provider}) because no credentials or environment keys exist for this provider.`);
-      continue;
-    }
-    const credentialId = activeCreds[0]?.credential?.id || 'default';
-
-    // Verify snapshot-level availability
-    const snapshotHealth = runSnapshot.modelAvailability[candidate.model_id] || 'available';
-    if (snapshotHealth === 'rate_limited' || snapshotHealth === 'unavailable') {
-      console.warn(`[ARMO Snapshot] Skipping ${candidate.model_id} for stage ${stage} because it is marked ${snapshotHealth} in run ${runId}`);
-      continue;
-    }
-
-    try {
-      const result = await executeSingleModelRequest({
-        ...options,
-        reasoningConfig: {
-          provider_type: candidate.provider as ReasoningProviderType,
-          provider_name: candidate.provider === 'google' ? 'Google Gemini' : candidate.provider,
-          model_id: candidate.model_id,
-          api_key: options.reasoningConfig?.api_key,
-          base_url: options.reasoningConfig?.base_url,
-        },
-      });
-
-      // Record successful run telemetry
-      armoOrchestrator.recordTransition(
-        runId,
-        stage,
-        i + 1,
-        requestedModel,
-        candidate.model_id,
-        candidate.model_id,
-        credentialId,
-        isPrimaryAttempt ? 'Primary execution attempt' : `Adaptive failover fallback from ${requestedModel}`,
-        'SUCCESS'
-      );
-
-      if (!isPrimaryAttempt) {
-        const fallbackLog: FallbackLogEntry = {
-          requested_provider: requestedProvider,
-          requested_model: requestedModel,
-          actual_provider: candidate.provider,
-          actual_model: candidate.model_id,
-          fallback: true,
-          fallback_reason: lastError?.message || 'Primary model quota exceeded / rate limit / unavailable',
-          stage,
-          entity_id: options.entityId,
-          attempt: i + 1,
-          timestamp: new Date().toISOString(),
-          user_preference_mode: mode,
-        };
-        fallbackAuditLogs.push(fallbackLog);
-        console.warn(`[EXPLICIT FALLBACK AUDIT]`, JSON.stringify(fallbackLog));
-      }
-
-      setProviderHealth(candidate.provider, candidate.model_id, 'available', '', 0);
-      return result;
-    } catch (err: any) {
-      lastError = err;
-      const errorClassification = classifyARMOError(err);
-
-      // Update snapshot & dynamic provider health
-      armoOrchestrator.updateModelHealth(
-        runId,
-        candidate.provider,
-        candidate.model_id,
-        errorClassification === 'quota_exhaustion' ? 'unavailable' : 'rate_limited'
-      );
-
-      armoOrchestrator.recordTransition(
-        runId,
-        stage,
-        i + 1,
-        requestedModel,
-        candidate.model_id,
-        candidate.model_id,
-        credentialId,
-        `Failed due to ${errorClassification}: ${err.message}`,
-        `FAIL (${errorClassification.toUpperCase()})`
-      );
-
-      const isQuotaOrRateLimit = isRateLimitOrQuotaError(err);
-      if (isQuotaOrRateLimit) {
-        setProviderHealth(candidate.provider, candidate.model_id, 'rate_limited', err?.message || 'Rate limit or 503 unavailable', Date.now() + 60000);
-      }
-
-      if (isFatalNonRecoverableError(err)) {
-        throw err;
-      }
-      if (!isQuotaOrRateLimit || forceModel || prefs?.fallback_policy === 'off' || prefs?.fallback_policy === 'strict') {
-        if (mode === 'fixed' && isQuotaOrRateLimit && isPrimaryAttempt) {
-          console.warn(`[LLM Provider] Model "${modelsToTry[0].model_id}" hit quota/rate limit in FIXED mode. Forcing fallback pool evaluation for user resilience.`);
-        } else {
-          throw err;
-        }
-      }
-      console.warn(`[Adaptive Router] Model "${candidate.model_id}" gagal karena kuota/rate limit. Mengevaluasi fallback berikutnya...`);
-    }
+    const cleanedText = cleanJsonResponse(gatewayResponse.text);
+    return {
+      text: cleanedText,
+    };
+  } catch (err: any) {
+    const errorClassification = classifyARMOError(err);
+    armoOrchestrator.recordTransition(
+      runId,
+      stage,
+      1,
+      requestedModel,
+      requestedModel,
+      requestedModel,
+      'none',
+      `Failed via AI Gateway: ${err.message}`,
+      `FAIL (${errorClassification.toUpperCase()})`
+    );
+    throw err;
   }
-
-  throw lastError || new Error('Seluruh model dalam primary dan fallback pool gagal memenuhi request.');
 }
 
 /**

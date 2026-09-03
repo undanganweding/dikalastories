@@ -392,9 +392,8 @@ export class CredentialManager {
    * Acquire next available healthy credential for a given provider.
    * Selection strategy:
    * 1. Filter to matching provider and status === 'active'.
-   * 2. Auto-recover expired rate limits.
-   * 3. Sort by priority ascending (1 = highest priority).
-   * 4. Among top priority bucket, use round-robin indexing.
+   * 2. Sort strictly by priority (ascending, 1 = highest priority).
+   * 3. Among equal priority, resolve deterministically alphabetically by ID to prevent random/round-robin load-balancing.
    */
   public acquireCredential(provider: ProviderType | string): { credential: ProviderCredential; rawKey: string } | null {
     const list = this.listCredentials();
@@ -426,14 +425,14 @@ export class CredentialManager {
       return null;
     }
 
-    // Group by lowest priority number
-    const minPriority = Math.min(...candidates.map((c) => c.priority));
-    const topTier = candidates.filter((c) => c.priority === minPriority);
+    // Sort strictly by priority (ascending, 1 is highest priority), then alphabetically by ID
+    candidates.sort((a, b) => {
+      const priorityDiff = a.priority - b.priority;
+      if (priorityDiff !== 0) return priorityDiff;
+      return a.id.localeCompare(b.id);
+    });
 
-    // Round-robin pointer
-    const currentPointer = providerPointers.get(provider) || 0;
-    const selected = topTier[currentPointer % topTier.length];
-    providerPointers.set(provider, (currentPointer + 1) % topTier.length);
+    const selected = candidates[0];
 
     const rawKey = inMemorySecrets.get(selected.id) || this.getDirectEnvKey(provider);
     if (!rawKey) {
@@ -457,7 +456,12 @@ export class CredentialManager {
       (c) => c.provider.toLowerCase() === provider.toLowerCase() && c.status === 'active'
     );
 
-    candidates.sort((a, b) => a.priority - b.priority);
+    // Sort strictly by priority (ascending), then alphabetically by ID
+    candidates.sort((a, b) => {
+      const priorityDiff = a.priority - b.priority;
+      if (priorityDiff !== 0) return priorityDiff;
+      return a.id.localeCompare(b.id);
+    });
 
     const result: { credential: ProviderCredential; rawKey: string }[] = [];
     for (const c of candidates) {

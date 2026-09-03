@@ -1,0 +1,69 @@
+import crypto from 'crypto';
+
+const ALGORITHM = 'aes-256-gcm';
+const IV_LENGTH = 12; // 12 bytes standard for GCM
+const AUTH_TAG_LENGTH = 16; // 16 bytes standard auth tag
+
+function getMasterKey(): Buffer {
+  const masterKeyEnv = process.env.AI_SECRET_MASTER_KEY;
+  if (!masterKeyEnv || masterKeyEnv.trim() === '') {
+    throw new Error('AI_SECRET_MASTER_KEY environment variable is missing. SecretVault cannot operate without a master encryption key.');
+  }
+  // Derive a 32-byte key from the master key string using SHA-256
+  return crypto.createHash('sha256').update(masterKeyEnv).digest();
+}
+
+export const secretVault = {
+  encryptSecret(secret: string): string {
+    if (!secret || typeof secret !== 'string') {
+      throw new Error('Invalid secret provided for encryption.');
+    }
+    const key = getMasterKey();
+    const iv = crypto.randomBytes(IV_LENGTH);
+    const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+
+    const encrypted = Buffer.concat([cipher.update(secret, 'utf8'), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+
+    // Format: iv:authTag:encryptedData (all in hex or base64)
+    return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`;
+  },
+
+  decryptSecret(payload: string): string {
+    if (!payload || typeof payload !== 'string') {
+      throw new Error('Invalid encrypted payload provided for decryption.');
+    }
+
+    const parts = payload.split(':');
+    if (parts.length !== 3) {
+      throw new Error('Invalid encrypted payload format. Expected iv:authTag:encryptedData.');
+    }
+
+    const [ivHex, authTagHex, encryptedHex] = parts;
+    try {
+      const key = getMasterKey();
+      const iv = Buffer.from(ivHex, 'hex');
+      const authTag = Buffer.from(authTagHex, 'hex');
+      const encrypted = Buffer.from(encryptedHex, 'hex');
+
+      if (iv.length !== IV_LENGTH || authTag.length !== AUTH_TAG_LENGTH) {
+        throw new Error('Invalid IV or Auth Tag length.');
+      }
+
+      const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+      decipher.setAuthTag(authTag);
+
+      const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+      return decrypted.toString('utf8');
+    } catch (err: any) {
+      throw new Error(`Authentication failure or decryption error: ${err.message}`);
+    }
+  },
+
+  maskSecret(secret: string): string {
+    if (!secret || typeof secret !== 'string' || secret.length < 8) {
+      return '********';
+    }
+    return `${secret.substring(0, 4)}...${secret.substring(secret.length - 4)}`;
+  },
+};
