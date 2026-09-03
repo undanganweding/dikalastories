@@ -5,8 +5,7 @@ import { observabilityService } from './observability_service';
 import { providerService } from './provider_service';
 import { credentialService } from './credential_service';
 import { secretVault } from '../security/secret_vault';
-import { openaiCompatibleDriver } from './openai_compatible_driver';
-import { GoogleGenAI } from '@google/genai';
+import { resolveProviderAdapter } from './provider_adapter_registry';
 import { capabilityRegistry, AICapabilityError, modelsRegistry } from './capability_registry';
 import { classifyTaskRequirements, rankCandidatesForIntent, TaskIntentRecommendation } from './intelligence_router';
 import { costIntelligenceService } from './cost_intelligence';
@@ -110,17 +109,19 @@ export const aiGateway = {
     try {
       allProviders = await providerService.listProviders();
     } catch (err) {
-      allProviders = [{ id: 'google', name: 'Google Provider', enabled: true, capabilities: { text: true } }];
+      allProviders = [];
     }
-    const enabledProviders = allProviders.filter(p => p.enabled);
+    let enabledProviders = allProviders.filter(p => p.enabled);
     if (enabledProviders.length === 0) {
-      enabledProviders.push({
+      // No providers in DB — create a transient default so the system is not dead on first boot
+      enabledProviders = [{
         id: 'google',
         name: 'Google Provider',
         type: 'gemini',
+        protocol: 'google-generative-ai',
         enabled: true,
         capabilities: { text: true, vision: true, image: true, video: true },
-      });
+      }];
     }
 
     // 2. Ask Phase 4.2 for eligible providers
@@ -228,7 +229,8 @@ export const aiGateway = {
             }
           }
 
-          const isOpneAICompatible = currentProvider.type === 'openai-compatible' || Boolean(currentProvider.baseUrl);
+          // Resolve execution adapter dynamically from provider protocol (no hardcoded provider names)
+          const adapter = resolveProviderAdapter(currentProvider);
 
           // Update last used timestamp
           try {
@@ -242,7 +244,11 @@ export const aiGateway = {
           let latencyMs = 0;
 
           // Resolve config-driven native model name
-          const activeModelId = capabilityRegistry.resolveNativeModel(currentProviderId, modelId);
+          let activeModelId = capabilityRegistry.resolveNativeModel(currentProviderId, modelId);
+          const protocol = (currentProvider.protocol || currentProvider.type || '').toLowerCase();
+          if ((protocol === 'google-generative-ai' || protocol === 'gemini') && activeModelId === 'ops-5') {
+            activeModelId = 'gemini-3.7-flash';
+          }
 
           if (apiKey === 'mock_api_key_test') {
             text = 'Mock test generation response';
@@ -250,9 +256,9 @@ export const aiGateway = {
             completionTokens = 45;
             totalTokens = 165;
             latencyMs = 120;
-          } else if (isOpneAICompatible && currentProvider.baseUrl) {
-            const result = await openaiCompatibleDriver.executeChatCompletion({
-              baseUrl: currentProvider.baseUrl,
+          } else {
+            const result = await adapter.execute({
+              provider: currentProvider,
               apiKey,
               model: activeModelId,
               prompt: req.prompt,
@@ -268,38 +274,6 @@ export const aiGateway = {
             completionTokens = result.completionTokens;
             totalTokens = result.totalTokens;
             latencyMs = result.latencyMs;
-          } else {
-            const ai = new GoogleGenAI({ apiKey });
-
-            const timeoutPromise = new Promise((_, reject) =>
-              setTimeout(() => reject(new Error('AI Request Timeout')), timeoutMs)
-            );
-
-            const config: any = {
-              systemInstruction: req.systemInstruction,
-              temperature: req.temperature ?? 0.7,
-              maxOutputTokens: req.maxTokens ?? 2048,
-            };
-
-            if (req.responseSchema) {
-              config.responseMimeType = 'application/json';
-              config.responseSchema = req.responseSchema;
-            }
-
-            const generatePromise = ai.models.generateContent({
-              model: activeModelId,
-              contents: req.prompt,
-              config,
-            });
-
-            const response: any = await Promise.race([generatePromise, timeoutPromise]);
-            latencyMs = Date.now() - startTime;
-
-            text = response.text || '';
-            const promptStr = typeof req.prompt === 'string' ? req.prompt : (req.prompt ? JSON.stringify(req.prompt) : '');
-            promptTokens = Math.round(promptStr.length / 4);
-            completionTokens = Math.round((text || '').length / 4);
-            totalTokens = promptTokens + completionTokens;
           }
 
           // Record success telemetry
@@ -380,6 +354,11 @@ export const aiGateway = {
             console.error('Passive telemetry logging error:', telemetryErr);
           }
 
+          // Update rolling credential usage stats (quota/usage model)
+          try {
+            await credentialService.recordCredentialUsage(credentialId, { success: true, totalTokens, latencyMs });
+          } catch {}
+
           return {
             text,
             credentialId,
@@ -412,6 +391,11 @@ export const aiGateway = {
 
             const healthRes = await healthService.recordFailure(credentialId, errorMsg, statusCode);
             const cooldownTriggered = Boolean(healthRes && healthRes.cooldownUntil && healthRes.cooldownUntil > Date.now());
+
+            // Update rolling credential usage stats (quota/usage model)
+            try {
+              await credentialService.recordCredentialUsage(credentialId, { success: false, latencyMs });
+            } catch {}
 
             observabilityService.recordTelemetry({
               traceId: requestId,

@@ -1,104 +1,159 @@
 @echo off
-setlocal enabledelayedexpansion
-title AI Studio Export -> Dikalastory (Auto Sync)
+setlocal EnableDelayedExpansion
+title AI Studio Sync — Dikalastory
 
-echo ================================================================
-echo   AI STUDIO EXPORT -^> DIKALASTORY (AUTO SYNC)
-echo ================================================================
+rem =============================================================================
+rem  sync-ai-studio.bat  (IN-PROJECT DELEGATE)
+rem  Located inside the dikalastory/ project folder.
+rem
+rem  Primary path  : Delegates to root canonical engine (sync_ai_studio_manager)
+rem  Fallback path : Runs apply-ai-studio-export.mjs directly via Node.js
+rem                  (for preview / quick copy without full validation)
+rem =============================================================================
+
+rem Resolve paths
+set "PROJECT_DIR=%~dp0"
+if "%PROJECT_DIR:~-1%"=="\" set "PROJECT_DIR=%PROJECT_DIR:~0,-1%"
+
+rem Root sync folder is one level up
+for %%I in ("%PROJECT_DIR%\..") do set "ROOT_DIR=%%~fI"
+set "CANONICAL_BAT=%ROOT_DIR%\sync_ai_studio_manager.bat"
+set "CANONICAL_PS1=%ROOT_DIR%\sync_ai_studio_manager.ps1"
+set "MJS_TOOL=%PROJECT_DIR%\apply-ai-studio-export.mjs"
+
+cls
 echo.
-echo  Script ini akan:
-echo   1. Deteksi file yang BERUBAH/BARU dari folder export (via hash)
-echo   2. Copy HANYA file source yang aman (src/, server/, dll)
-echo   3. LINDUNGI config penting (.env, vercel.json, api/index.ts,
-echo      package.json build script, data/, firebase-applet-config.json)
-echo   4. Merge dependency package.json baru (build script tetap aman)
-echo   5. Opsional: npm install + git commit + push (Vercel auto-deploy)
+echo =======================================================================
+echo   AI STUDIO SYNC ^— DIKALASTORY  (in-project launcher)
+echo =======================================================================
 echo.
 
-REM ------------------------------------------------------------
-REM 1) Tentukan sumber: zip/folder export
-REM    - Bisa dikasih argumen (drag&drop zip ke bat / ketik path)
-REM    - Atau kosongkan -> AUTO-DETECT zip terbaru (root, D:\Web, Downloads)
-REM ------------------------------------------------------------
-set "EXPORT_DIR="
-if not "%~1"=="" set "EXPORT_DIR=%~1"
-
-if "%EXPORT_DIR%"=="" (
-    echo  Biarkan kosong utk AUTO-DETECT zip terbaru, atau isi path:
-    echo    - file zip   contoh: D:\Web\my-export.zip
-    echo    - folder     contoh: D:\Web\my-export-folder
+rem -----------------------------------------------------------------------
+rem Check if canonical root engine exists — prefer it
+rem -----------------------------------------------------------------------
+if exist "%CANONICAL_PS1%" (
+    echo   Canonical engine ditemukan: %CANONICAL_PS1%
     echo.
-    set /p EXPORT_DIR="  Path ^(enter = auto-detect^): "
-)
-
-if "%EXPORT_DIR%"=="" (
+    echo   [1]  Buka CANONICAL LAUNCHER (menu lengkap dengan validasi + push)
+    echo   [2]  PREVIEW via Node.js  (quick diff, tanpa copy)
+    echo   [3]  COPY via Node.js     (copy saja, tanpa validate/commit)
+    echo   [0]  Keluar
     echo.
-    echo  [AUTO] Mencari zip terbaru di root project, D:\Web\ , dan Downloads...
-    node "%~dp0apply-ai-studio-export.mjs" --preview
-    echo.
-    echo  --- Daftar file yang akan disinkron ^(PREVIEW^) di atas ---
-    echo  Kalau sudah yakin, jalankan lagi dan pilih mode COPY/FULL.
-    goto :end
-)
+    set /p CHOICE="  Pilih [0-3]: "
 
-if not exist "%EXPORT_DIR%" (
-    echo  [X] Path tidak ditemukan: %EXPORT_DIR%
-    echo  Catatan: untuk folder, kasih path folder hasil ekstrak; untuk zip, kasih path file .zip.
+    if "!CHOICE!"=="0" goto :end
+    if "!CHOICE!"=="1" goto :use_canonical
+    if "!CHOICE!"=="2" goto :node_preview
+    if "!CHOICE!"=="3" goto :node_copy
+
+    echo   [!] Pilihan tidak valid.
     pause
-    exit /b 1
-)
+    goto :end
+) else (
+    rem Canonical engine not present — standalone Node.js mode
+    echo   Canonical engine tidak ditemukan di: %ROOT_DIR%
+    echo   Menjalankan mode standalone via Node.js...
+    echo.
+    echo   [1]  PREVIEW  (audit diff saja)
+    echo   [2]  COPY     (copy file yang berubah)
+    echo   [3]  FULL     (copy + install + commit + push)
+    echo   [0]  Keluar
+    echo.
+    set /p CHOICE="  Pilih [0-3]: "
 
-echo.
-echo  Folder export: %EXPORT_DIR%
-echo.
-
-REM ------------------------------------------------------------
-REM 2) Pilih mode
-REM ------------------------------------------------------------
-echo  Pilih mode:
-echo    [1] PREVIEW  - deteksi saja, tidak menulis apa pun
-echo    [2] COPY     - copy file yang berubah (tanpa install/commit)
-echo    [3] FULL     - copy + npm install + git commit + push
-echo.
-set /p MODE="  Pilih (1/2/3): "
-
-if "%MODE%"=="1" (
-    node "%~dp0apply-ai-studio-export.mjs" "%EXPORT_DIR%" --preview
+    if "!CHOICE!"=="0" goto :end
+    if "!CHOICE!"=="1" goto :node_preview_standalone
+    if "!CHOICE!"=="2" goto :node_copy_standalone
+    if "!CHOICE!"=="3" goto :node_full_standalone
     goto :end
 )
 
-if "%MODE%"=="2" (
-    node "%~dp0apply-ai-studio-export.mjs" "%EXPORT_DIR%"
-    goto :after_copy
-)
-
-if "%MODE%"=="3" (
-    set /p COMMIT_MSG="  Pesan commit ^(Enter = default^): "
-    if "!COMMIT_MSG!"=="" set "COMMIT_MSG=Update from AI Studio export"
-    node "%~dp0apply-ai-studio-export.mjs" "%EXPORT_DIR%" --install --commit --message "!COMMIT_MSG!"
-    goto :end
-)
-
-echo  [X] Pilihan tidak valid.
+rem -----------------------------------------------------------------------
+:use_canonical
+echo.
+echo   Membuka canonical launcher...
+call "%CANONICAL_BAT%"
 goto :end
 
-:after_copy
+rem -----------------------------------------------------------------------
+:node_preview
 echo.
-set /p LANJUT="  Lanjut npm install + commit + push? (y/n): "
-if /i "%LANJUT%"=="y" (
-    set /p COMMIT_MSG="  Pesan commit ^(Enter = default^): "
-    if "!COMMIT_MSG!"=="" set "COMMIT_MSG=Update from AI Studio export"
+set /p SRC_PATH="  Path ZIP/folder (Enter = auto-detect): "
+if "!SRC_PATH!"=="" (
+    node "%MJS_TOOL%" --preview
+) else (
+    node "%MJS_TOOL%" "!SRC_PATH!" --preview
+)
+goto :done
+
+rem -----------------------------------------------------------------------
+:node_copy
+echo.
+set /p SRC_PATH="  Path ZIP/folder (Enter = auto-detect): "
+if "!SRC_PATH!"=="" (
+    node "%MJS_TOOL%"
+) else (
+    node "%MJS_TOOL%" "!SRC_PATH!"
+)
+goto :done
+
+rem -----------------------------------------------------------------------
+:node_preview_standalone
+echo.
+set /p SRC_PATH="  Path ZIP/folder (Enter = auto-detect): "
+if "!SRC_PATH!"=="" (
+    node "%MJS_TOOL%" --preview
+) else (
+    node "%MJS_TOOL%" "!SRC_PATH!" --preview
+)
+goto :done
+
+rem -----------------------------------------------------------------------
+:node_copy_standalone
+echo.
+set /p SRC_PATH="  Path ZIP/folder (Enter = auto-detect): "
+if "!SRC_PATH!"=="" (
+    node "%MJS_TOOL%"
+) else (
+    node "%MJS_TOOL%" "!SRC_PATH!"
+)
+echo.
+set /p CONTINUE="  Lanjut npm install + commit + push? (y/n): "
+if /i "!CONTINUE!"=="y" (
+    set /p CMSG="  Pesan commit (Enter = default): "
+    if "!CMSG!"=="" set "CMSG=sync: AI Studio export update"
+    pushd "%PROJECT_DIR%"
     npm.cmd install
     git add -A
-    git commit -m "!COMMIT_MSG!"
+    git commit -m "!CMSG!"
     git push origin main
-    echo.
-    echo  >>> Push sukses. Vercel akan auto-deploy.
+    popd
 )
+goto :done
+
+rem -----------------------------------------------------------------------
+:node_full_standalone
+echo.
+set /p SRC_PATH="  Path ZIP/folder (Enter = auto-detect): "
+set /p CMSG="  Pesan commit (Enter = default): "
+if "!CMSG!"=="" set "CMSG=sync: AI Studio export update"
+if "!SRC_PATH!"=="" (
+    node "%MJS_TOOL%" --install --commit --message "!CMSG!"
+) else (
+    node "%MJS_TOOL%" "!SRC_PATH!" --install --commit --message "!CMSG!"
+)
+goto :done
+
+rem -----------------------------------------------------------------------
+:done
+echo.
+echo =======================================================================
+echo   Selesai.
+echo =======================================================================
+echo.
+pause
+goto :end
 
 :end
-echo.
-echo ================================================================
-echo   Selesai. Tekan tombol apa saja untuk keluar.
-echo ================================================================
-pause >nul
+endlocal
+exit /b 0

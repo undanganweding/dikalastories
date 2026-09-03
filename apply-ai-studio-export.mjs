@@ -2,118 +2,153 @@
 /**
  * apply-ai-studio-export.mjs
  * ==========================
- * Smart round-trip dari hasil export ZIP Google AI Studio ke project ini.
+ * Inner Node.js sync tool — used by sync-ai-studio.bat (in-project delegate).
+ * The canonical full sync (with validation + git) is handled by the root
+ * PowerShell engine: sync_ai_studio_manager.ps1
  *
- * Fitur:
- *  - BISA nerima file .zip LANGSUNG (auto-extract ke folder temp) ATAU folder hasil ekstrak.
- *  - AUTO-DETECT: kalau dipanggil tanpa argumen, cari .zip terbaru di:
- *      1) Folder Downloads user
- *      2) Root project
- *      3) D:\Web\
- *  - Bandingkan hash file (export vs project) untuk DETEKSI file yang berubah.
- *  - Copy HANYA file source yang aman (src/, server/, dll) + file baru.
- *  - LINDUNGI file config penting (.env*, data/, vercel.json, api/index.ts,
- *    package.json, .gitignore, firebase-applet-config.json). (untuk package.json
- *    hanya MERGE dependencies, TIDAK menimpa build script kita).
- *  - Laporan ringkas per file: [BARU] / [UBAH] / [SAMA].
- *  - Opsi `--install` jalankan npm install, `--commit` jalankan git commit+push.
+ * This script handles:
+ *  - Accept ZIP file or extracted folder as source
+ *  - Auto-detect newest ZIP from Downloads / project root / D:\Web\
+ *  - SHA256-based diff (upgraded from SHA1) — content-aware, timestamp-immune
+ *  - Copy only safe source files (src/, server/, root configs)
+ *  - Protected file rules aligned with the canonical PS1 engine
+ *  - AI Infrastructure awareness: server/ai_infrastructure/** always synced
+ *  - DB migration protection: server/db.ts and server/firebase_admin.ts preserved
+ *  - Merge NEW dependencies from export package.json (scripts block preserved)
+ *  - Optional: npm install, git commit + push
  *
  * Usage:
- *   node apply-ai-studio-export.mjs "<file.zip | folder export>" [--install] [--commit] [--message "msg"]
- *   node apply-ai-studio-export.mjs --preview                        (auto-detect zip terbaru)
+ *   node apply-ai-studio-export.mjs [<file.zip | folder>] [--preview]
+ *                                   [--install] [--commit] [--message "msg"]
  */
 
-import fs from 'fs';
+import fs   from 'fs';
 import path from 'path';
-import os from 'os';
-import { createHash } from 'crypto';
-import { execSync } from 'child_process';
+import os   from 'os';
+import { createHash }  from 'crypto';
+import { execSync }    from 'child_process';
 
-// ---------------------------------------------------------------
-// 1) Daftar pattern yang BOLEH di-copy dari export AI Studio
-// ---------------------------------------------------------------
-const ALLOWED_SOURCES = [
-  'src/**',
-  'server/**',
-  'index.html',
-  'vite.config.ts',
-  'tsconfig.json',
-  'tailwind.config.*',
-  'postcss.config.*',
+// -----------------------------------------------------------------------
+// ALLOWED SOURCE PATTERNS
+// Files from the export that are eligible to be copied.
+// -----------------------------------------------------------------------
+const ALLOWED_PREFIXES = [
+  'src/',
+  'server/',
 ];
 
-// ---------------------------------------------------------------
-// 2) File yang JANGAN PERNAH ditimpa (config penting + rahasia)
-// ---------------------------------------------------------------
-const PROTECTED = [
-  '.env', '.env.local', '.env.production', '.env.example',
-  '.gitignore', '.git',
+const ALLOWED_ROOT_FILES = new Set([
+  'index.html',
+  'vite.config.ts',
+  'vite.config.js',
+  'tsconfig.json',
+  'metadata.json',
+  'README.md',
+  'CHANGELOG.md',
+  'tailwind.config.ts',
+  'tailwind.config.js',
+  'postcss.config.js',
+  'postcss.config.cjs',
+]);
+
+// -----------------------------------------------------------------------
+// PROTECTED FILES — NEVER overwritten from export source
+// Must stay in sync with sync_ai_studio_manager.ps1 PROTECTED lists.
+// -----------------------------------------------------------------------
+const PROTECTED_EXACT = new Set([
+  '.env',
+  '.env.local',
+  '.env.production',
+  '.env.development',
+  '.env.example',
+  '.gitignore',
   'vercel.json',
   'api/index.ts',
   'firebase-applet-config.json',
-  'package.json', 'package-lock.json', 'bun.lock',
+  'package.json',
+  'package-lock.json',
+  'bun.lock',
   'push.bat',
-  'data/**',
+  'sync-ai-studio.bat',
+  'server.ts',
+  // ---- DATABASE MIGRATION PROTECTION ----
+  // These files hold the Firestore+JSON fallback architecture.
+  // USE_FIRESTORE toggle and the full adapter layer must NOT be reverted.
+  'server/db.ts',
+  'server/firebase_admin.ts',
+]);
+
+const PROTECTED_PREFIXES = [
+  'data/',       // firestore_store.json, credentials, API keys
+  '.git/',
+  '.vercel/',
+  'node_modules/',
+  'dist/',
+  'build/',
+  '.firebase/',
 ];
 
-// ---------------------------------------------------------------
-// Globs sederhana
-// ---------------------------------------------------------------
-function matchesGlob(file, glob) {
-  const neg = glob.startsWith('!');
-  if (neg) glob = glob.slice(1);
+// -----------------------------------------------------------------------
+// AI INFRASTRUCTURE — always synced, bypasses protection rules
+// server/ai_infrastructure/** contains Phase 4–5.4B gateway, router,
+// optimizer, memory, and decision intelligence modules.
+// -----------------------------------------------------------------------
+const AI_INFRA_PREFIX = 'server/ai_infrastructure/';
 
-  const parts = glob.split('/');
-  const fileParts = file.replace(/\\/g, '/').split('/');
+function isProtected(relFile) {
+  const f = relFile.replace(/\\/g, '/').toLowerCase();
 
-  let ok = true;
-  for (let i = 0; i < parts.length; i++) {
-    const p = parts[i];
-    if (p === '**') {
-      // '**' matches zero or more segments; for simplicity treat as pass-through
-      continue;
-    }
-    if (p.includes('*')) {
-      const re = new RegExp('^' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*') + '$');
-      if (!re.test(fileParts[i])) { ok = false; break; }
-    } else {
-      if (fileParts[i] !== p) { ok = false; break; }
-    }
-  }
-  return ok;
-}
+  // AI infra always gets through
+  if (f.startsWith(AI_INFRA_PREFIX)) return false;
 
-function shouldCopy(file) {
-  // Protected first
-  for (const p of PROTECTED) {
-    if (matchesGlob(file, p)) return false;
-  }
-  // Then allowed
-  for (const a of ALLOWED_SOURCES) {
-    if (matchesGlob(file, a)) return true;
+  if (PROTECTED_EXACT.has(f)) return true;
+  for (const p of PROTECTED_PREFIXES) {
+    if (f.startsWith(p)) return true;
   }
   return false;
 }
 
-// ---------------------------------------------------------------
-// Hash file (fast, SHA1)
-// ---------------------------------------------------------------
-function hashFile(p) {
+function isAllowed(relFile) {
+  if (isProtected(relFile)) return false;
+
+  const f = relFile.replace(/\\/g, '/');
+
+  // AI infra is always allowed
+  if (f.startsWith(AI_INFRA_PREFIX)) return true;
+
+  for (const prefix of ALLOWED_PREFIXES) {
+    if (f.startsWith(prefix)) return true;
+  }
+
+  // Root-level allowed files
+  if (!f.includes('/') && ALLOWED_ROOT_FILES.has(f)) return true;
+
+  return false;
+}
+
+// -----------------------------------------------------------------------
+// SHA256 hash (upgraded from SHA1 — content-aware, collision-resistant)
+// -----------------------------------------------------------------------
+function hashFile(filePath) {
   try {
-    const h = createHash('sha1');
-    h.update(fs.readFileSync(p));
-    return h.digest('hex');
+    return createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
   } catch {
     return null;
   }
 }
 
-function walk(dir, base, acc) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+// -----------------------------------------------------------------------
+// Directory walker
+// -----------------------------------------------------------------------
+function walk(dir, base, acc = []) {
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    const rel = path.relative(base, full).replace(/\\/g, '/');
+    const rel  = path.relative(base, full).replace(/\\/g, '/');
     if (entry.isDirectory()) {
-      if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name === '.git') continue;
+      const skip = ['node_modules', 'dist', 'build', '.git', '.firebase',
+                    '.vercel', 'coverage', '.next', '.vite', 'tmp', 'temp'];
+      if (skip.includes(entry.name)) continue;
       walk(full, base, acc);
     } else {
       acc.push(rel);
@@ -122,247 +157,263 @@ function walk(dir, base, acc) {
   return acc;
 }
 
-// ---------------------------------------------------------------
-// Merge dependencies dari package.json export -> project
-// (TIDAK menimpa script build / vercel fix kita)
-// ---------------------------------------------------------------
+// -----------------------------------------------------------------------
+// package.json dependency merge
+// Scripts block is always preserved from the project (not overwritten).
+// -----------------------------------------------------------------------
 function mergeDependencies(exportDir, projectDir) {
-  const expPkg = path.join(exportDir, 'package.json');
+  const expPkg  = path.join(exportDir,  'package.json');
   const projPkg = path.join(projectDir, 'package.json');
   if (!fs.existsSync(expPkg) || !fs.existsSync(projPkg)) return null;
 
-  const exp = JSON.parse(fs.readFileSync(expPkg, 'utf-8'));
+  const exp  = JSON.parse(fs.readFileSync(expPkg,  'utf-8'));
   const proj = JSON.parse(fs.readFileSync(projPkg, 'utf-8'));
 
-  const dropped = { dependencies: [], devDependencies: [] };
-  let added = { dependencies: [], devDependencies: [] };
+  const added = { dependencies: [], devDependencies: [] };
+  let changed  = false;
 
   for (const section of ['dependencies', 'devDependencies']) {
-    if (exp[section]) {
-      for (const [name, ver] of Object.entries(exp[section])) {
-        if (!proj[section] || !proj[section][name]) {
-          if (!proj[section]) proj[section] = {};
-          proj[section][name] = ver;
-          added[section].push(`${name}@${ver}`);
-        } else if (proj[section][name] !== ver) {
-          proj[section][name] = ver;
-          added[section].push(`${name}@${ver}`);
-        }
+    if (!exp[section]) continue;
+    for (const [name, ver] of Object.entries(exp[section])) {
+      if (!proj[section]) proj[section] = {};
+      const existing = proj[section][name];
+      if (!existing) {
+        proj[section][name] = ver;
+        added[section].push(`${name}@${ver}`);
+        changed = true;
+      } else if (existing !== ver) {
+        proj[section][name] = ver;
+        added[section].push(`${name}@${ver} (was ${existing})`);
+        changed = true;
       }
     }
   }
 
-  if (added.dependencies.length === 0 && added.devDependencies.length === 0) {
-    return { changed: false, added };
+  if (changed) {
+    fs.writeFileSync(projPkg, JSON.stringify(proj, null, 2) + '\n', 'utf-8');
   }
-
-  fs.writeFileSync(projPkg, JSON.stringify(proj, null, 2) + '\n', 'utf-8');
-  return { changed: true, added };
+  return { changed, added };
 }
 
-// ---------------------------------------------------------------
-// Auto-detect .zip terbaru di folder umum
-// ---------------------------------------------------------------
-function getCandidateDirs() {
-  const dirs = [];
-  // 1) Downloads user
-  try { dirs.push(path.join(os.homedir(), 'Downloads')); } catch {}
-  // 2) Root project
-  dirs.push(process.cwd());
-  // 3) D:\Web\
-  dirs.push('D:\\Web\\');
-  // 4) AI Studio output folder
-  dirs.push(path.join(process.cwd(), 'ai-studio-export'));
-  return dirs;
-}
+// -----------------------------------------------------------------------
+// Auto-detect newest ZIP
+// -----------------------------------------------------------------------
+function findNewestZip(projectRoot) {
+  const searchDirs = [
+    path.join(os.homedir(), 'Downloads'),
+    projectRoot,
+    path.dirname(projectRoot),   // root of sync github folder
+    'D:\\Web',
+    path.join(projectRoot, 'ai-studio-export'),
+  ];
 
-function findNewestZip() {
   const candidates = [];
-  for (const dir of getCandidateDirs()) {
+  for (const dir of searchDirs) {
     if (!fs.existsSync(dir)) continue;
     let entries = [];
     try { entries = fs.readdirSync(dir); } catch { continue; }
     for (const name of entries) {
-      if (name.toLowerCase().endsWith('.zip')) {
-        const full = path.join(dir, name);
-        try {
-          const st = fs.statSync(full);
-          candidates.push({ full, mtime: st.mtimeMs, name });
-        } catch {}
-      }
+      if (!name.toLowerCase().endsWith('.zip')) continue;
+      const full = path.join(dir, name);
+      try {
+        const st = fs.statSync(full);
+        candidates.push({ full, mtime: st.mtimeMs });
+      } catch {}
     }
   }
-  if (candidates.length === 0) return null;
+
+  if (!candidates.length) return null;
   candidates.sort((a, b) => b.mtime - a.mtime);
-  return candidates[0];
+  return candidates[0].full;
 }
 
-// ---------------------------------------------------------------
-// Ekstrak zip ke folder temp (pakai PowerShell Expand-Archive agar
-// tidak tergantung library tambahan)
-// ---------------------------------------------------------------
+// -----------------------------------------------------------------------
+// ZIP extraction (via PowerShell Expand-Archive — no extra deps)
+// -----------------------------------------------------------------------
 function extractZip(zipPath) {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-studio-'));
+  const tmp    = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-studio-'));
   const zipAbs = path.resolve(zipPath);
-  console.log(`  [ZIP] ${path.basename(zipPath)} -> ekstrak ke ${tmp}`);
+  console.log(`  [ZIP] Extracting ${path.basename(zipPath)} -> ${tmp}`);
+
   try {
     execSync(
       `powershell -NoProfile -Command "Expand-Archive -LiteralPath '${zipAbs}' -DestinationPath '${tmp}' -Force"`,
       { stdio: 'pipe' }
     );
-    // Cari subfolder berisi package.json / src (zip kadang punya 1 folder pembungkus)
-    const entries = fs.readdirSync(tmp);
-    for (const e of entries) {
-      const sub = path.join(tmp, e);
-      if (fs.statSync(sub).isDirectory() && (fs.existsSync(path.join(sub, 'src')) || fs.existsSync(path.join(sub, 'server')) || fs.existsSync(path.join(sub, 'package.json')))) {
-        return sub;
-      }
-    }
-    return tmp;
   } catch (e) {
-    console.error(`  [X] Gagal ekstrak zip: ${e.message}`);
-    console.error('  Coba ekstrak manual, lalu jalankan dengan folder.');
+    console.error(`  [X] ZIP extraction failed: ${e.message}`);
     process.exit(1);
   }
+
+  // Unwrap single wrapper folder if present
+  const entries = fs.readdirSync(tmp);
+  for (const e of entries) {
+    const sub = path.join(tmp, e);
+    if (fs.statSync(sub).isDirectory() &&
+        (fs.existsSync(path.join(sub, 'src')) ||
+         fs.existsSync(path.join(sub, 'server')) ||
+         fs.existsSync(path.join(sub, 'package.json')))) {
+      return sub;
+    }
+  }
+  return tmp;
 }
 
-// ---------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Main
-// ---------------------------------------------------------------
+// -----------------------------------------------------------------------
 function main() {
-  const args = process.argv.slice(2);
-  let src = args.find(a => !a.startsWith('--'));
-  const preview = args.includes('--preview');
+  const args       = process.argv.slice(2);
+  let   srcArg     = args.find(a => !a.startsWith('--'));
+  const preview    = args.includes('--preview');
   const wantInstall = args.includes('--install');
-  const wantCommit = args.includes('--commit');
-  const msgIdx = args.indexOf('--message');
-  const commitMsg = msgIdx > -1 ? args[msgIdx + 1] : 'Update from AI Studio export';
+  const wantCommit  = args.includes('--commit');
+  const msgIdx      = args.indexOf('--message');
+  const commitMsg   = msgIdx > -1 ? args[msgIdx + 1] : 'sync: AI Studio export update';
 
-  // Jika tidak ada argumen path, auto-detect zip terbaru
-  if (!src) {
-    const z = findNewestZip();
-    if (z) {
-      console.log(`  [AUTO] Tidak ada argumen. Pakai zip terbaru:`);
-      console.log(`        ${z.full} (${new Date(z.mtime).toLocaleString()})`);
-      src = z.full;
+  const root = process.cwd();  // Expected to be run from inside dikalastory/
+
+  // Resolve source
+  if (!srcArg) {
+    const zip = findNewestZip(root);
+    if (zip) {
+      console.log(`  [AUTO] No path given. Using newest ZIP:`);
+      console.log(`         ${zip} (${new Date(fs.statSync(zip).mtimeMs).toLocaleString()})`);
+      srcArg = zip;
     } else {
-      console.error('Tidak ada argumen dan tidak ketemu .zip. Beri path:');
-      console.error('  node apply-ai-studio-export.mjs "<file.zip | folder>"');
+      console.error('  [X] No source path provided and no ZIP found.');
+      console.error('      Usage: node apply-ai-studio-export.mjs "<zip|folder>" [--preview]');
       process.exit(1);
     }
   }
 
-  src = path.resolve(src);
+  let src = path.resolve(srcArg);
 
-  // Jika input adalah file .zip, ekstrak dulu
-  let isZip = fs.existsSync(src) && fs.statSync(src).isFile() && src.toLowerCase().endsWith('.zip');
-  if (isZip) {
-    src = extractZip(src);
+  // Extract ZIP if needed
+  let tmpDir = null;
+  if (fs.existsSync(src) && fs.statSync(src).isFile() && src.toLowerCase().endsWith('.zip')) {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-studio-'));
+    src    = extractZip(src);
   }
 
   if (!fs.existsSync(src)) {
-    console.error(`Folder export tidak ditemukan: ${src}`);
+    console.error(`  [X] Source not found: ${src}`);
     process.exit(1);
   }
 
-  const root = process.cwd();
-  const allFiles = walk(src, src, []);
-  const copyable = allFiles.filter(shouldCopy);
+  // Scan and filter
+  const allFiles = walk(src, src);
+  const copyable = allFiles.filter(isAllowed);
 
-  console.log('='.repeat(64));
-  console.log('  AI Studio Export -> Project Lokal');
-  console.log('='.repeat(64));
-  console.log(`  Sumber : ${src}`);
+  console.log('='.repeat(66));
+  console.log('  apply-ai-studio-export.mjs');
+  console.log('='.repeat(66));
+  console.log(`  Source : ${src}`);
   console.log(`  Target : ${root}`);
-  console.log(`  Mode   : ${preview ? 'PREVIEW' : 'COPY'}\n`);
+  console.log(`  Mode   : ${preview ? 'PREVIEW' : 'COPY'}`);
+  console.log(`  Diff   : SHA256 (content-based)`);
+  console.log('');
 
-  const changed = [];
-  const same = [];
+  const toNew    = [];
+  const toChange = [];
+  const same     = [];
 
   for (const f of copyable) {
-    const srcPath = path.join(src, f);
+    const srcPath = path.join(src,  f);
     const dstPath = path.join(root, f);
-    let status;
     if (!fs.existsSync(dstPath)) {
-      status = 'BARU';
+      toNew.push({ f, srcPath, dstPath });
     } else {
       const h1 = hashFile(srcPath);
       const h2 = hashFile(dstPath);
-      status = h1 === h2 ? 'SAMA' : 'UBAH';
+      if (h1 !== h2) toChange.push({ f, srcPath, dstPath });
+      else           same.push(f);
     }
-    if (status === 'SAMA') same.push(f);
-    else changed.push({ f, srcPath, dstPath, status });
   }
 
-  console.log(`  Deteksi: ${changed.length} berubah/baru, ${same.length} sama.\n`);
+  const total = toNew.length + toChange.length;
+  console.log(`  Detected: ${toNew.length} new, ${toChange.length} changed, ${same.length} identical\n`);
 
-  if (changed.length === 0) {
-    console.log('  Tidak ada file yang berubah. Project sudah sinkron.');
+  if (total === 0) {
+    console.log('  Project is already in sync.');
   } else {
-    for (const { f, status } of changed) {
-      console.log(`  [${status}] ${f}`);
+    for (const { f } of toNew)    console.log(`  [NEW]    ${f}`);
+    for (const { f } of toChange) {
+      const isAI = f.toLowerCase().startsWith('server/ai_infrastructure/');
+      console.log(`  [${isAI ? 'AI-INFRA' : 'CHANGE '}] ${f}`);
     }
   }
 
-  if (!preview && changed.length > 0) {
-    console.log('\n  >>> Menyalin file...');
-    for (const { srcPath, dstPath } of changed) {
-      fs.mkdirSync(path.dirname(dstPath), { recursive: true });
-      fs.copyFileSync(srcPath, dstPath);
-    }
-    console.log(`  >>> Copied: ${changed.length} file(s).`);
-  }
-
-  // Merge package.json dependencies (hanya jika ada file export package.json)
-  const mergeResult = mergeDependencies(src, root);
-  if (mergeResult?.changed) {
-    console.log('\n  >>> [package.json] Dependency BARU/tambahan di-merge:');
-    for (const [sec, list] of Object.entries(mergeResult.added)) {
-      if (list.length) console.log(`       ${sec}: ${list.join(', ')}`);
-    }
-    console.log('       (build script & vercel fix TETAP dipertahankan)');
-  } else if (mergeResult) {
-    console.log('\n  >>> [package.json] Tidak ada dependency baru.');
+  // Protected file audit
+  const protectedInSrc = allFiles.filter(f => isProtected(f));
+  if (protectedInSrc.length) {
+    console.log('\n  Protected files in source (preserved in target):');
+    for (const f of protectedInSrc) console.log(`  [PROTECTED] ${f}`);
   }
 
   if (preview) {
-    console.log('\n  >>> (PREVIEW) tidak ada yang ditulis.\n');
+    console.log('\n  >> PREVIEW mode — nothing written.\n');
     return;
   }
 
-  // Optional: npm install
+  if (total > 0) {
+    console.log('\n  >> Copying files...');
+    for (const { srcPath, dstPath } of [...toNew, ...toChange]) {
+      fs.mkdirSync(path.dirname(dstPath), { recursive: true });
+      fs.copyFileSync(srcPath, dstPath);
+    }
+    console.log(`  >> Copied: ${total} file(s).`);
+  }
+
+  // Merge dependencies
+  const mergeResult = mergeDependencies(src, root);
+  if (mergeResult?.changed) {
+    console.log('\n  >> package.json — new/updated dependencies:');
+    for (const [sec, list] of Object.entries(mergeResult.added)) {
+      if (list.length) console.log(`     ${sec}: ${list.join(', ')}`);
+    }
+    console.log('     (scripts block preserved)');
+  } else if (mergeResult) {
+    console.log('\n  >> package.json: no new dependencies.');
+  }
+
+  // Cleanup temp
+  if (tmpDir) {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+
+  // npm install
   if (wantInstall) {
-    console.log('\n  >>> Menjalankan npm install...');
+    console.log('\n  >> Running npm install...');
     try {
       execSync('npm.cmd install', { stdio: 'inherit', cwd: root });
     } catch {
-      console.warn('  >>> npm install ada issue (non-fatal). Lanjut...');
+      console.warn('  >> npm install had issues (non-fatal). Continuing...');
     }
   }
 
-  // Optional: git commit + push
+  // git commit + push
   if (wantCommit) {
-    console.log(`\n  >>> Git: add, commit "${commitMsg}", push...`);
+    console.log(`\n  >> Git: add → commit "${commitMsg}" → push...`);
     try {
-      execSync('git add -A', { stdio: 'inherit', cwd: root });
+      execSync('git add -A',                         { stdio: 'inherit', cwd: root });
       execSync(`git commit -m "${commitMsg.replace(/"/g, '\\"')}"`, { stdio: 'inherit', cwd: root });
-      execSync('git push origin main', { stdio: 'inherit', cwd: root });
-      console.log('  >>> Push sukses. Vercel auto-deploy.');
+      execSync('git push origin main',               { stdio: 'inherit', cwd: root });
+      console.log('  >> Push successful. Vercel will auto-deploy.');
     } catch {
-      console.warn('  >>> Git commit/push gagal. Cek pesan di atas. (bisa karena tidak ada perubahan / perlu login)');
+      console.warn('  >> git commit/push failed — check output above.');
     }
   }
 
-  console.log('\n' + '='.repeat(64));
-  console.log('  Selesai.');
-  if (!wantCommit) {
-    console.log('  Langkah lanjut (manual):');
-    console.log('   1. npm.cmd install');
-    console.log('   2. npm.cmd run dev');
-    console.log('   3. .\\node_modules\\.bin\\tsx.cmd -r dotenv/config server/firestore_diagnostic.ts');
-    console.log('   4. git diff && git add -A && git commit -m "..." && git push origin main');
+  console.log('\n' + '='.repeat(66));
+  console.log('  Done.');
+  if (!wantInstall || !wantCommit) {
+    console.log('  Next steps (if not done):');
+    if (!wantInstall) console.log('    npm.cmd install');
+    if (!wantCommit)  console.log('    git add -A && git commit -m "..." && git push origin main');
+    console.log('  Or use the root sync_ai_studio_manager.bat for full workflow.');
   }
-  console.log('='.repeat(64));
+  console.log('='.repeat(66));
 }
 
 main();

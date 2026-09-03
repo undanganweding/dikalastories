@@ -14,17 +14,60 @@ import {
   AlertCircle,
   Activity,
   Zap,
+  ChevronDown,
+  ChevronRight,
+  Gauge,
+  Clock,
+  Database,
+  Wifi,
+  WifiOff,
+  BarChart3,
 } from 'lucide-react';
 
+function getAdapterLabel(protocol: string, type: string): string {
+  const p = (protocol || type || '').toLowerCase();
+  if (p === 'google-generative-ai' || p === 'gemini') return 'Google Generative AI';
+  if (p === 'openai-compatible') return 'OpenAI-Compatible';
+  if (p === 'anthropic' || p === 'anthropic-compatible') return 'Anthropic-Compatible';
+  if (p === 'ollama') return 'Ollama';
+  if (p === 'custom-http') return 'Custom HTTP';
+  return p || 'Unknown';
+}
+
+function getProtocolColor(protocol: string): string {
+  const p = (protocol || '').toLowerCase();
+  if (p === 'google-generative-ai' || p === 'gemini') return 'bg-blue-500/20 text-blue-300 border-blue-500/30';
+  if (p === 'openai-compatible') return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30';
+  if (p === 'anthropic' || p === 'anthropic-compatible') return 'bg-amber-500/20 text-amber-300 border-amber-500/30';
+  if (p === 'ollama') return 'bg-purple-500/20 text-purple-300 border-purple-500/30';
+  if (p === 'custom-http') return 'bg-rose-500/20 text-rose-300 border-rose-500/30';
+  return 'bg-zinc-700/30 text-zinc-400 border-zinc-600/30';
+}
+
+function getHealthBadge(healthStatus?: string): { label: string; color: string; icon: React.ReactNode } {
+  switch (healthStatus) {
+    case 'connected':
+      return { label: 'Connected', color: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30', icon: <Wifi className="w-3 h-3" /> };
+    case 'failed':
+      return { label: 'Failed', color: 'bg-rose-500/20 text-rose-300 border-rose-500/30', icon: <WifiOff className="w-3 h-3" /> };
+    default:
+      return { label: 'Unknown', color: 'bg-zinc-700/30 text-zinc-400 border-zinc-600/30', icon: <AlertCircle className="w-3 h-3" /> };
+  }
+}
+
 export const ProvidersWorkspace: React.FC = () => {
-  const { providers, health, loading, isRefreshing, refresh } = useInfrastructureState();
+  const { providers, health, projects: credentials, loading, isRefreshing, refresh } = useInfrastructureState();
 
   // Add Provider Modal State
   const [showAddModal, setShowAddModal] = useState(false);
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
+  const [protocol, setProtocol] = useState('openai-compatible');
   const [saving, setSaving] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+
+  // Expandable credentials per provider
+  const [expandedProviderId, setExpandedProviderId] = useState<string | null>(null);
 
   // Model Discovery State
   const [discoveringId, setDiscoveringId] = useState<string | null>(null);
@@ -57,7 +100,8 @@ export const ProvidersWorkspace: React.FC = () => {
         body: JSON.stringify({
           name: name.trim(),
           baseUrl: baseUrl.trim(),
-          type: 'openai-compatible',
+          protocol: protocol,
+          type: protocol,
         }),
       });
 
@@ -69,6 +113,7 @@ export const ProvidersWorkspace: React.FC = () => {
       setShowAddModal(false);
       setName('');
       setBaseUrl('');
+      setProtocol('openai-compatible');
       await refresh();
     } catch (err: any) {
       setAddError(err.message || 'Failed to register provider.');
@@ -184,6 +229,14 @@ export const ProvidersWorkspace: React.FC = () => {
   }
 
   const providerHealth = health.providers || {};
+  const credsArray = Array.isArray(credentials) ? credentials : [];
+  const providerCredentialsMap = credsArray.reduce((acc: any, c: any) => {
+    const pid = c.providerId;
+    if (!pid) return acc;
+    if (!acc[pid]) acc[pid] = [];
+    acc[pid].push(c);
+    return acc;
+  }, {} as Record<string, any[]>);
 
   return (
     <div className="space-y-6">
@@ -242,7 +295,12 @@ export const ProvidersWorkspace: React.FC = () => {
             availability: '99.9%',
           };
           const isLive = hInfo.status === 'live' || p.enabled !== false;
-          const isCustom = p.id !== 'google' && p.type === 'openai-compatible';
+          const isCustom = p.id !== 'google';
+          const healthBadge = getHealthBadge(p.healthStatus);
+          const providerCreds = providerCredentialsMap[p.id] || [];
+          const isExpanded = expandedProviderId === p.id;
+          const protocolLabel = getAdapterLabel(p.protocol, p.type);
+          const protocolColor = getProtocolColor(p.protocol || p.type);
           const discoveryInfo = discoveryStatus[p.id];
           const testInfo = testResults[p.id];
 
@@ -261,29 +319,52 @@ export const ProvidersWorkspace: React.FC = () => {
                     <div>
                       <div className="font-bold text-white font-mono text-sm">{p.name}</div>
                       <div className="text-[11px] font-mono text-zinc-500 uppercase">
-                        ID: {p.id} • Protocol:{' '}
-                        {p.type === 'openai-compatible'
-                          ? 'OpenAI-Compatible (/v1)'
-                          : p.type || 'Native Google'}
+                        ID: {p.id}
                       </div>
                     </div>
-                    <span
-                      className={`px-2 py-0.5 text-[10px] font-mono rounded-full font-bold uppercase ml-2 ${
-                        isLive
-                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                          : 'bg-zinc-800 text-zinc-400 border border-white/5'
-                      }`}
-                    >
-                      {isLive ? 'Online / Live' : 'Disabled'}
+                    <span className={`px-2 py-0.5 text-[10px] font-mono rounded-full font-bold uppercase ml-2 ${protocolColor}`}>
+                      {protocolLabel}
+                    </span>
+                    <span className={`px-2 py-0.5 text-[10px] font-mono rounded-full font-bold uppercase ${healthBadge.color}`}>
+                      {healthBadge.label}
+                    </span>
+                    <span className={`px-2 py-0.5 text-[10px] font-mono rounded-full font-bold uppercase ml-2 ${
+                      isLive
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        : 'bg-zinc-800 text-zinc-400 border border-white/5'
+                    }`}>
+                      {isLive ? 'Enabled' : 'Disabled'}
                     </span>
                   </div>
 
-                  {/* Base URL (if custom) */}
+                  {/* Base URL */}
                   {p.baseUrl && (
                     <div className="flex items-center gap-1.5 text-xs font-mono text-zinc-400 pl-1">
                       <Globe className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
                       <span className="text-zinc-500">Base URL:</span>
                       <span className="text-indigo-300 select-all">{p.baseUrl}</span>
+                    </div>
+                  )}
+
+                  {/* Description */}
+                  {p.description && (
+                    <div className="text-xs font-mono text-zinc-500 pl-1">{p.description}</div>
+                  )}
+
+                  {/* Health details */}
+                  {p.healthStatus === 'connected' && p.healthLatency !== undefined && (
+                    <div className="flex items-center gap-1.5 text-xs font-mono text-emerald-400 pl-1">
+                      <Clock className="w-3.5 h-3.5" />
+                      <span>{p.healthLatency}ms</span>
+                      {p.healthLastCheckedAt && (
+                        <span className="text-zinc-500">• checked {new Date(p.healthLastCheckedAt).toLocaleTimeString()}</span>
+                      )}
+                    </div>
+                  )}
+                  {p.healthStatus === 'failed' && p.healthError && (
+                    <div className="flex items-center gap-1.5 text-xs font-mono text-rose-400 pl-1">
+                      <AlertCircle className="w-3.5 h-3.5" />
+                      <span className="truncate max-w-[300px]">{p.healthError}</span>
                     </div>
                   )}
 
@@ -306,37 +387,47 @@ export const ProvidersWorkspace: React.FC = () => {
                 {/* Right Metrics & Actions */}
                 <div className="flex flex-wrap items-center gap-4 text-xs font-mono">
                   <div className="text-right">
-                    <div className="text-zinc-500 text-[10px]">VAULT KEYS</div>
+                    <div className="text-zinc-500 text-[10px]">CREDENTIALS</div>
                     <div className="text-indigo-300 font-bold mt-0.5 flex items-center gap-1">
                       <Key className="w-3.5 h-3.5 text-indigo-400" />
-                      {p.credentials ?? 0} credential{p.credentials === 1 ? '' : 's'}
+                      {providerCreds.length} key{providerCreds.length === 1 ? '' : 's'}
                     </div>
                   </div>
 
                   <div className="text-right">
-                    <div className="text-zinc-500 text-[10px]">AVAILABILITY</div>
+                    <div className="text-zinc-500 text-[10px]">STATUS</div>
                     <div className="text-emerald-400 font-bold mt-0.5 flex items-center gap-1">
                       <CheckCircle2 className="w-3.5 h-3.5" />
-                      {hInfo.availability || '99.9%'}
+                      {healthBadge.label}
                     </div>
                   </div>
+
+                  {/* Expand Credentials */}
+                  <button
+                    onClick={() => setExpandedProviderId(isExpanded ? null : p.id)}
+                    className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-white/10 rounded-lg transition text-xs font-mono flex items-center gap-1.5"
+                    title="Expand provider credentials"
+                  >
+                    {isExpanded ? <ChevronDown className="w-3.5 h-3.5 text-indigo-400" /> : <ChevronRight className="w-3.5 h-3.5 text-indigo-400" />}
+                    <span>{isExpanded ? 'Hide Keys' : 'Show Keys'}</span>
+                  </button>
 
                   {/* Test Reachability */}
                   <button
                     onClick={() => handleTestProvider(p.id)}
                     disabled={testingId === p.id}
                     className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-white/10 rounded-lg transition text-xs font-mono flex items-center gap-1.5 disabled:opacity-50"
-                    title="Test Provider Base URL connectivity"
+                    title="Test Provider connection"
                   >
                     {testingId === p.id ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
                     ) : (
                       <Activity className="w-3.5 h-3.5 text-indigo-400" />
                     )}
-                    <span>Ping</span>
+                    <span>Test</span>
                   </button>
 
-                  {/* Actions for OpenAI-Compatible Providers */}
+                  {/* Model Discovery */}
                   {p.baseUrl && (
                     <button
                       onClick={() => handleDiscoverModels(p.id)}
@@ -349,7 +440,7 @@ export const ProvidersWorkspace: React.FC = () => {
                       ) : (
                         <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
                       )}
-                      <span>Discover Models</span>
+                      <span>Discover</span>
                     </button>
                   )}
 
@@ -369,6 +460,58 @@ export const ProvidersWorkspace: React.FC = () => {
                   )}
                 </div>
               </div>
+
+              {/* Expandable Credentials Section */}
+              {isExpanded && (
+                <div className="mt-2 bg-zinc-950/60 border border-white/5 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center gap-2 text-xs font-mono text-zinc-400 uppercase">
+                    <Database className="w-3.5 h-3.5 text-indigo-400" />
+                    Credential Vault
+                  </div>
+                  {providerCreds.length === 0 ? (
+                    <div className="text-xs font-mono text-zinc-500">No credentials configured for this provider.</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {providerCreds.map((c: any) => (
+                        <div key={c.id} className="flex items-center justify-between gap-4 bg-zinc-900/60 border border-white/5 rounded-lg px-3 py-2">
+                          <div className="flex items-center gap-2">
+                            <Key className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                            <span className="text-sm font-mono text-white">{c.name}</span>
+                            {c.maskedKey && <span className="text-zinc-500 text-xs">{c.maskedKey}</span>}
+                          </div>
+                          <div className="flex items-center gap-3 text-xs font-mono">
+                            <span className={`px-2 py-0.5 rounded-full font-bold uppercase text-[10px] ${
+                              c.status === 'active' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                              : c.status === 'rate_limited' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                              : c.status === 'exhausted' || c.status === 'invalid_auth' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                              : 'bg-zinc-700/30 text-zinc-400 border border-zinc-600/30'}`}>
+                              {c.status}
+                            </span>
+                            {c.quota && (
+                              <span className="text-zinc-400 flex items-center gap-1">
+                                <Gauge className="w-3 h-3" />
+                                {c.quota.remaining}/{c.quota.total}
+                              </span>
+                            )}
+                            {c.usage && (
+                              <span className="text-zinc-400 flex items-center gap-1">
+                                <BarChart3 className="w-3 h-3" />
+                                {c.usage.successRate}% • {c.usage.avgLatencyMs}ms
+                              </span>
+                            )}
+                            {c.healthStatus && (
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                c.healthStatus === 'healthy' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>
+                                {c.healthStatus}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Ping Test status message */}
               {testInfo && (
@@ -452,7 +595,7 @@ export const ProvidersWorkspace: React.FC = () => {
                 <div className="p-2 rounded-lg bg-indigo-600/20 text-indigo-400 border border-indigo-500/30">
                   <Server className="w-4 h-4" />
                 </div>
-                <h3 className="text-base font-bold text-white font-mono">Add OpenAI-Compatible Provider</h3>
+                <h3 className="text-base font-bold text-white font-mono">Add Custom Provider</h3>
               </div>
               <button
                 onClick={() => setShowAddModal(false)}
@@ -484,12 +627,17 @@ export const ProvidersWorkspace: React.FC = () => {
 
               <div>
                 <label className="block text-xs font-mono text-zinc-400 mb-1.5">Protocol</label>
-                <input
-                  type="text"
-                  value="OpenAI-Compatible (/v1)"
-                  disabled
-                  className="w-full bg-zinc-950/50 border border-white/5 rounded-lg px-3 py-2 text-zinc-400 text-xs font-mono cursor-not-allowed"
-                />
+                <select
+                  value={protocol}
+                  onChange={e => setProtocol(e.target.value)}
+                  className="w-full bg-zinc-950 border border-white/10 rounded-lg px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="openai-compatible">OpenAI-Compatible (/v1)</option>
+                  <option value="google-generative-ai">Google Generative AI (Gemini)</option>
+                  <option value="anthropic-compatible">Anthropic-Compatible</option>
+                  <option value="ollama">Ollama (Local)</option>
+                  <option value="custom-http">Custom HTTP</option>
+                </select>
               </div>
 
               <div>

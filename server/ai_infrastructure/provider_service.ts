@@ -35,6 +35,7 @@ export const providerService = {
   },
 
   async removeProvider(id: string): Promise<{ success: boolean; detachedCredentials: number; detachedModels: number }> {
+    // Only the built-in Google provider is protected; all user-created providers are removable.
     if (id === 'google') {
       throw new Error('Cannot delete default native Google provider.');
     }
@@ -64,6 +65,7 @@ export const providerService = {
         id: 'google',
         name: 'Google Gemini',
         type: 'gemini',
+        protocol: 'google-generative-ai',
         enabled: true,
         capabilities: { text: true, vision: true, image: true, video: true },
       });

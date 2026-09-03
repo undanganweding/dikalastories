@@ -1974,8 +1974,11 @@ export interface FullStoryPackage {
 export interface AIProvider {
   id: string;
   name: string;
-  type: 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'xai' | 'openai-compatible';
+  type: 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'xai' | 'openai-compatible' | string;
   baseUrl?: string;
+  protocol?: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
   enabled: boolean;
   capabilities: {
     text: boolean;
@@ -1983,6 +1986,10 @@ export interface AIProvider {
     image: boolean;
     video: boolean;
   };
+  healthStatus?: 'connected' | 'failed' | 'unknown';
+  healthLatency?: number;
+  healthLastCheckedAt?: number;
+  healthError?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -2002,6 +2009,18 @@ export interface AICredential {
   priority: number;
   weight: number;
   lastUsedAt?: number;
+  quota?: {
+    total: number;
+    used: number;
+    remaining: number;
+    resetAt?: number;
+  };
+  usage?: {
+    totalRequests: number;
+    totalTokens: number;
+    successRate: number;
+    avgLatencyMs: number;
+  };
   createdAt: number;
   updatedAt: number;
 }

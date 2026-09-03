@@ -897,19 +897,32 @@ export const supabaseDb = {
     const supabase = getSupabaseClient();
     const { data, error } = await supabase.from('ai_providers').select('*');
     if (error) throw new Error(`[Supabase Error getProviders]: ${error.message}`);
-    return (data || []) as AIProvider[];
+    return (data || []).map((row: any) => ({
+      ...row,
+      baseUrl: row.base_url,
+      protocol: row.protocol,
+      description: row.description,
+      metadata: row.metadata || {},
+      healthStatus: row.health_status || 'unknown',
+      healthLatency: row.health_latency,
+      healthLastCheckedAt: row.health_last_checked_at,
+      healthError: row.health_error,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    })) as AIProvider[];
   },
 
   async getProvider(id: string): Promise<AIProvider | null> {
     const supabase = getSupabaseClient();
     const { data, error } = await supabase.from('ai_providers').select('*').eq('id', id).maybeSingle();
     if (error || !data) return null;
-    return data as AIProvider;
+    return { ...data, baseUrl: data.base_url, protocol: data.protocol, description: data.description, metadata: data.metadata || {}, healthStatus: data.health_status || 'unknown', healthLatency: data.health_latency, healthLastCheckedAt: data.health_last_checked_at, healthError: data.health_error, createdAt: data.created_at, updatedAt: data.updated_at } as AIProvider;
   },
 
   async saveProvider(provider: AIProvider): Promise<AIProvider> {
     const supabase = getSupabaseClient();
-    const cleanData = sanitizeForSupabase(provider);
+    const { baseUrl, protocol, description, metadata, healthStatus, healthLatency, healthLastCheckedAt, healthError, createdAt, updatedAt, ...rest } = provider;
+    const cleanData = sanitizeForSupabase({ ...rest, base_url: baseUrl, protocol, description, metadata: metadata || {}, health_status: healthStatus || 'unknown', health_latency: healthLatency, health_last_checked_at: healthLastCheckedAt, health_error: healthError, created_at: createdAt, updated_at: updatedAt });
     const { error } = await supabase.from('ai_providers').upsert(cleanData);
     if (error) throw new Error(`[Supabase Error saveProvider]: ${error.message}`);
     return provider;
@@ -933,6 +946,18 @@ export const supabaseDb = {
       encryptedSecret: r.encrypted_secret,
       googleMetadata: r.google_metadata,
       lastUsedAt: r.last_used_at,
+      quota: (r.quota_total || r.quota_used || r.quota_remaining || r.quota_reset_at) ? {
+        total: r.quota_total || 0,
+        used: r.quota_used || 0,
+        remaining: r.quota_remaining || 0,
+        resetAt: r.quota_reset_at || undefined,
+      } : undefined,
+      usage: {
+        totalRequests: r.usage_total_requests || 0,
+        totalTokens: Number(r.usage_total_tokens || 0),
+        successRate: Number(r.usage_success_rate || 100),
+        avgLatencyMs: Number(r.usage_avg_latency_ms || 0),
+      },
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     })) as AICredential[];
@@ -949,6 +974,18 @@ export const supabaseDb = {
       encryptedSecret: data.encrypted_secret,
       googleMetadata: data.google_metadata,
       lastUsedAt: data.last_used_at,
+      quota: (data.quota_total || data.quota_used || data.quota_remaining || data.quota_reset_at) ? {
+        total: data.quota_total || 0,
+        used: data.quota_used || 0,
+        remaining: data.quota_remaining || 0,
+        resetAt: data.quota_reset_at || undefined,
+      } : undefined,
+      usage: {
+        totalRequests: data.usage_total_requests || 0,
+        totalTokens: Number(data.usage_total_tokens || 0),
+        successRate: Number(data.usage_success_rate || 100),
+        avgLatencyMs: Number(data.usage_avg_latency_ms || 0),
+      },
       createdAt: data.created_at,
       updatedAt: data.updated_at,
     } as AICredential;
@@ -967,6 +1004,14 @@ export const supabaseDb = {
       priority: cred.priority,
       weight: cred.weight,
       last_used_at: cred.lastUsedAt,
+      quota_total: cred.quota?.total ?? 0,
+      quota_used: cred.quota?.used ?? 0,
+      quota_remaining: cred.quota?.remaining ?? 0,
+      quota_reset_at: cred.quota?.resetAt,
+      usage_total_requests: cred.usage?.totalRequests ?? 0,
+      usage_total_tokens: cred.usage?.totalTokens ?? 0,
+      usage_success_rate: cred.usage?.successRate ?? 100,
+      usage_avg_latency_ms: cred.usage?.avgLatencyMs ?? 0,
       created_at: cred.createdAt,
       updated_at: cred.updatedAt,
     });

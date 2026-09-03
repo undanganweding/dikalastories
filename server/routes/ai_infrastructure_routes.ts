@@ -7,8 +7,8 @@ import { healthService } from '../ai_infrastructure/health_service';
 import { usageService } from '../ai_infrastructure/usage_service';
 import { observabilityService } from '../ai_infrastructure/observability_service';
 import { openaiCompatibleDriver } from '../ai_infrastructure/openai_compatible_driver';
+import { resolveProviderAdapter, getAdapterLabel, PROVIDER_PROTOCOLS, normalizeLegacyProtocol } from '../ai_infrastructure/provider_adapter_registry';
 import { secretVault } from '../security/secret_vault';
-import { GoogleGenAI } from '@google/genai';
 
 import { databaseHealthService } from '../ai_infrastructure/database_health_service';
 
@@ -34,26 +34,41 @@ aiInfrastructureRouter.get('/providers', async (req: Request, res: Response) => 
   }
 });
 
-// 1a. Add Custom OpenAI-Compatible Provider
+// Protocol registry endpoint for the UI dropdown
+aiInfrastructureRouter.get('/providers/protocols', async (_req: Request, res: Response) => {
+  res.json(PROVIDER_PROTOCOLS);
+});
+
+// 1a. Add Provider (protocol-driven; baseUrl requirement decided by protocol registry)
 aiInfrastructureRouter.post('/providers', async (req: Request, res: Response) => {
   try {
-    const { name, baseUrl, capabilities } = req.body;
+    const { name, baseUrl, protocol: rawProtocol, description, metadata, capabilities } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Provider name is required.' });
     }
-    if (!baseUrl || !baseUrl.trim()) {
-      return res.status(400).json({ error: 'Base URL is required for custom OpenAI-compatible providers.' });
+
+    const protocol = normalizeLegacyProtocol(rawProtocol) || 'openai-compatible';
+    const protocolDef = PROVIDER_PROTOCOLS.find(p => p.id === protocol);
+    if (!protocolDef) {
+      return res.status(400).json({ error: `Unknown protocol: "${protocol}". Allowed: ${PROVIDER_PROTOCOLS.map(p => p.id).join(', ')}.` });
     }
 
-    const urlValidation = openaiCompatibleDriver.validateBaseUrl(baseUrl);
-    if (!urlValidation.isValid || !urlValidation.normalizedUrl) {
-      return res.status(400).json({ error: `Invalid Base URL: ${urlValidation.error}` });
+    // Base URL required-ness comes from the protocol registry, not hardcoded logic
+    let normalizedUrl: string | undefined = undefined;
+    if (baseUrl && baseUrl.trim()) {
+      const urlValidation = openaiCompatibleDriver.validateBaseUrl(baseUrl);
+      if (!urlValidation.isValid || !urlValidation.normalizedUrl) {
+        return res.status(400).json({ error: `Invalid Base URL: ${urlValidation.error}` });
+      }
+      normalizedUrl = urlValidation.normalizedUrl;
+    } else if (protocolDef.baseUrlRequired) {
+      return res.status(400).json({ error: `Base URL is required for protocol "${protocolDef.label}".` });
     }
 
     const existingProviders = await providerService.listProviders();
     const duplicate = existingProviders.find(
       p => p.name.trim().toLowerCase() === name.trim().toLowerCase() ||
-           (p.baseUrl && urlValidation.normalizedUrl && p.baseUrl.toLowerCase() === urlValidation.normalizedUrl.toLowerCase())
+           (p.baseUrl && normalizedUrl && p.baseUrl.toLowerCase() === normalizedUrl.toLowerCase())
     );
     if (duplicate) {
       return res.status(409).json({
@@ -68,8 +83,11 @@ aiInfrastructureRouter.post('/providers', async (req: Request, res: Response) =>
     const newProvider = await providerService.addProvider({
       id,
       name: name.trim(),
-      type: 'openai-compatible',
-      baseUrl: urlValidation.normalizedUrl,
+      type: protocol,
+      protocol,
+      description,
+      metadata,
+      baseUrl: normalizedUrl,
       enabled: true,
       capabilities: capabilities || { text: true, vision: false, image: false, video: false },
     });
@@ -107,7 +125,7 @@ aiInfrastructureRouter.delete('/providers/:id', async (req: Request, res: Respon
 aiInfrastructureRouter.patch('/providers/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, baseUrl, enabled, capabilities } = req.body;
+    const { name, baseUrl, enabled, capabilities, protocol, description, metadata } = req.body;
     const provider = await providerService.getProvider(id);
     if (!provider) {
       return res.status(404).json({ error: 'Provider not found.' });
@@ -115,16 +133,25 @@ aiInfrastructureRouter.patch('/providers/:id', async (req: Request, res: Respons
 
     let normalizedUrl = provider.baseUrl;
     if (baseUrl !== undefined && baseUrl !== provider.baseUrl) {
-      const urlValidation = openaiCompatibleDriver.validateBaseUrl(baseUrl);
-      if (!urlValidation.isValid) {
-        return res.status(400).json({ error: `Invalid Base URL: ${urlValidation.error}` });
+      if (baseUrl && baseUrl.trim()) {
+        const urlValidation = openaiCompatibleDriver.validateBaseUrl(baseUrl);
+        if (!urlValidation.isValid) {
+          return res.status(400).json({ error: `Invalid Base URL: ${urlValidation.error}` });
+        }
+        normalizedUrl = urlValidation.normalizedUrl;
+      } else {
+        normalizedUrl = undefined;
       }
-      normalizedUrl = urlValidation.normalizedUrl;
     }
+
+    const nextProtocol = protocol !== undefined ? normalizeLegacyProtocol(protocol) : (provider.protocol || provider.type);
 
     const updated = await providerService.updateProvider(id, {
       name: name !== undefined ? name.trim() : provider.name,
       baseUrl: normalizedUrl,
+      protocol: nextProtocol,
+      description: description !== undefined ? description : provider.description,
+      metadata: metadata !== undefined ? metadata : provider.metadata,
       enabled: enabled !== undefined ? Boolean(enabled) : provider.enabled,
       capabilities: capabilities || provider.capabilities,
     });
@@ -144,27 +171,31 @@ aiInfrastructureRouter.post('/providers/:id/test', async (req: Request, res: Res
       return res.status(404).json({ error: 'Provider not found.' });
     }
 
-    if (id === 'google') {
-      return res.json({ success: true, message: 'Google Gemini provider is online.' });
-    }
-
-    if (!provider.baseUrl) {
-      return res.status(400).json({ error: 'Provider has no Base URL configured.' });
-    }
+    // Resolve adapter by protocol (no hardcoded provider names)
+    const adapter = resolveProviderAdapter(provider);
 
     // Try finding credential or do public ping
     const creds = await credentialService.listCredentials();
     const cred = creds.find(c => c.providerId === id);
     const apiKey = cred ? secretVault.decryptSecret(cred.encryptedSecret) : '';
 
-    const testResult = await openaiCompatibleDriver.testConnectivity(provider.baseUrl, apiKey);
+    const testResult = await adapter.testConnection(provider, apiKey);
+
+    // Persist health result on provider
+    await providerService.updateProvider(id, {
+      healthStatus: testResult.success ? 'connected' : 'failed',
+      healthLatency: testResult.latencyMs,
+      healthLastCheckedAt: Date.now(),
+      healthError: testResult.error,
+    });
+
     res.json(testResult);
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 1c. Discover Models from Provider
+// 1c. Discover Models from Provider (protocol-driven; falls back to manual input)
 aiInfrastructureRouter.post('/providers/:id/discover-models', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -172,8 +203,13 @@ aiInfrastructureRouter.post('/providers/:id/discover-models', async (req: Reques
     if (!provider) {
       return res.status(404).json({ error: `Provider "${id}" not found.` });
     }
-    if (!provider.baseUrl) {
-      return res.status(400).json({ error: `Provider "${provider.name}" does not have a Base URL configured.` });
+
+    const adapter = resolveProviderAdapter(provider);
+    if (!adapter.discoverModels) {
+      return res.status(400).json({
+        error: `Protocol "${provider.protocol || provider.type}" does not support automatic model discovery. Use manual model input.`,
+        manualInputRequired: true,
+      });
     }
 
     // Find first active credential for this provider to authenticate discovery
@@ -186,13 +222,20 @@ aiInfrastructureRouter.post('/providers/:id/discover-models', async (req: Reques
     }
 
     const apiKey = secretVault.decryptSecret(providerCreds[0].encryptedSecret);
-    const discovered = await openaiCompatibleDriver.fetchModels(provider.baseUrl, apiKey);
+    const result = await adapter.discoverModels(provider, apiKey);
+
+    if (!result) {
+      return res.status(400).json({
+        error: 'Discovery unavailable for this provider; use manual model input.',
+        manualInputRequired: true,
+      });
+    }
 
     // Idempotently upsert models into Model Registry preserving providerId distinction
     const existingModels = await modelRegistryService.listModels();
     const addedModels = [];
 
-    for (const m of discovered) {
+    for (const m of result.models) {
       const exists = existingModels.some(existing => existing.id === m.id && existing.providerId === id);
       if (!exists) {
         const newModel = await modelRegistryService.addModel({
@@ -212,7 +255,7 @@ aiInfrastructureRouter.post('/providers/:id/discover-models', async (req: Reques
 
     res.json({
       success: true,
-      discoveredCount: discovered.length,
+      discoveredCount: result.models.length,
       addedCount: addedModels.length,
       models: providerModels,
     });
@@ -346,9 +389,11 @@ aiInfrastructureRouter.get('/credentials', async (req: Request, res: Response) =
         lastUsedAt: c.lastUsedAt || null,
         createdAt: c.createdAt,
         updatedAt: c.updatedAt,
-        successRate: intel?.health.successRate ?? 100,
-        totalTokens: intel?.metrics.totalTokens ?? 0,
-        totalRequests: intel?.metrics.totalRequests ?? 0,
+        quota: c.quota || null,
+        usage: c.usage || null,
+        successRate: intel?.health.successRate ?? c.usage?.successRate ?? 100,
+        totalTokens: intel?.metrics.totalTokens ?? c.usage?.totalTokens ?? 0,
+        totalRequests: intel?.metrics.totalRequests ?? c.usage?.totalRequests ?? 0,
         healthStatus: intel?.health.status ?? 'healthy',
         cooldownRemainingSec: intel?.health.cooldownRemainingSec ?? null,
       };
@@ -363,35 +408,51 @@ aiInfrastructureRouter.get('/credentials', async (req: Request, res: Response) =
 // 3. Add API Key
 aiInfrastructureRouter.post('/credentials', async (req: Request, res: Response) => {
   try {
-    const { providerId, name, secret, priority, weight } = req.body;
-    if (!providerId || !name || !secret) {
-      return res.status(400).json({ error: 'providerId, name, and secret are required.' });
+    const { providerId, providerName, name, secret, apiKey, baseUrl, protocol, description, metadata, capabilities, priority, weight, quota } = req.body;
+    if (!name || !(secret || apiKey)) {
+      return res.status(400).json({ error: 'name and apiKey are required.' });
     }
 
-    // Provider Validation (Task 4)
-    const provider = await providerService.getProvider(providerId);
+    // A connection may create its provider inline; provider IDs are not registry-enforced.
+    let provider = providerId ? await providerService.getProvider(providerId) : null;
+    let resolvedProviderId = providerId;
     if (!provider) {
-      return res.status(400).json({ error: `Unknown provider: "${providerId}".` });
+      if (!baseUrl) {
+        return res.status(400).json({ error: 'baseUrl is required when creating a new provider connection.' });
+      }
+      const generatedId = `provider_${name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')}_${Date.now().toString(36)}`;
+      provider = await providerService.addProvider({
+        id: resolvedProviderId || generatedId,
+        name: providerName?.trim() || name.trim(),
+        type: protocol || 'openai-compatible',
+        baseUrl,
+        protocol: protocol || 'openai-compatible',
+        description,
+        metadata,
+        enabled: true,
+        capabilities: capabilities || { text: true, vision: false, image: false, video: false },
+      });
+      resolvedProviderId = provider.id;
     }
 
-    // Duplicate Credential Name Validation (Task 3)
     const existingCreds = await credentialService.listCredentials();
     const duplicateName = existingCreds.find(
-      c => c.providerId === providerId && c.name.trim().toLowerCase() === name.trim().toLowerCase()
+      c => c.providerId === resolvedProviderId && c.name.trim().toLowerCase() === name.trim().toLowerCase()
     );
     if (duplicateName) {
       return res.status(400).json({
-        error: `A credential named "${name.trim()}" already exists for provider "${providerId}".`,
+        error: `A credential named "${name.trim()}" already exists for provider "${resolvedProviderId}".`,
       });
     }
 
     const newCred = await credentialService.addCredential({
-      providerId,
+      providerId: resolvedProviderId,
       name: name.trim(),
-      secret: secret.trim(),
+      secret: (secret || apiKey).trim(),
       status: 'active',
       priority: priority || 1,
       weight: weight || 10,
+      quota,
     });
 
     res.status(201).json({
@@ -463,25 +524,27 @@ aiInfrastructureRouter.post('/credentials/:id/test', async (req: Request, res: R
     let responseSample = '';
     let latencyMs = 0;
 
-    if (provider?.type === 'openai-compatible' && provider.baseUrl) {
-      testModel = 'openai-compatible-model';
-      const testResult = await openaiCompatibleDriver.testConnectivity(provider.baseUrl, apiKey);
+    if (provider) {
+      const adapter = resolveProviderAdapter(provider);
+      const protocol = (provider.protocol || provider.type || '').toLowerCase();
+      testModel = protocol === 'google-generative-ai' || protocol === 'gemini' ? 'gemini-3.7-flash' : 'openai-compatible-model';
+      const testResult = await adapter.testConnection(provider, apiKey);
       latencyMs = testResult.latencyMs;
 
       if (!testResult.success) {
         throw new Error(testResult.error || 'Connection check failed');
       }
       responseSample = 'Connection verified successfully';
-    } else {
-      const ai = new GoogleGenAI({ apiKey });
-      const response = await ai.models.generateContent({
-        model: testModel,
-        contents: 'Ping connectivity test. Reply with OK.',
-      });
 
-      latencyMs = Date.now() - startTime;
-      const responseText = response.text || '';
-      responseSample = responseText.trim().substring(0, 50);
+      // Persist provider health
+      await providerService.updateProvider(provider.id, {
+        healthStatus: 'connected',
+        healthLatency: latencyMs,
+        healthLastCheckedAt: Date.now(),
+        healthError: undefined,
+      });
+    } else {
+      throw new Error('Provider not found for credential.');
     }
 
     await usageService.recordUsage({
@@ -640,17 +703,21 @@ aiInfrastructureRouter.post('/health/check-all', async (req: Request, res: Respo
         const provider = await providerService.getProvider(cred.providerId);
         let latencyMs = 0;
 
-        if (provider?.type === 'openai-compatible' && provider.baseUrl) {
-          const testRes = await openaiCompatibleDriver.testConnectivity(provider.baseUrl, apiKey);
+        if (provider) {
+          const adapter = resolveProviderAdapter(provider);
+          const testRes = await adapter.testConnection(provider, apiKey);
           latencyMs = testRes.latencyMs;
           if (!testRes.success) throw new Error(testRes.error || 'Connection failed');
-        } else {
-          const ai = new GoogleGenAI({ apiKey });
-          await ai.models.generateContent({
-            model: 'gemini-3.7-flash',
-            contents: 'ping',
+
+          // Persist provider health
+          await providerService.updateProvider(provider.id, {
+            healthStatus: 'connected',
+            healthLatency: latencyMs,
+            healthLastCheckedAt: Date.now(),
+            healthError: undefined,
           });
-          latencyMs = Date.now() - startTime;
+        } else {
+          throw new Error(`Provider not found for credential ${cred.id}.`);
         }
 
         await healthService.recordSuccess(cred.id);
