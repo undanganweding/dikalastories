@@ -44,7 +44,10 @@ if (IS_PRODUCTION && process.env.SUPABASE_ENABLED !== 'true' && !isFirestoreConf
   );
 }
 
-const USE_FIRESTORE = process.env.FORCE_LOCAL_DB === 'true' ? false : isFirestoreConfigured();
+const SUPABASE_ENABLED = process.env.SUPABASE_ENABLED === 'true';
+const USE_FIRESTORE = process.env.FORCE_LOCAL_DB === 'true'
+  ? false
+  : !SUPABASE_ENABLED && process.env.USE_FIRESTORE !== 'false' && isFirestoreConfigured();
 console.log(
   `[DB INIT] SUPABASE_ENABLED=${process.env.SUPABASE_ENABLED} FORCE_LOCAL_DB=${process.env.FORCE_LOCAL_DB} isFirestoreConfigured=${isFirestoreConfigured()} isSupabaseConfigured=${isSupabaseConfigured()} USE_FIRESTORE=${USE_FIRESTORE}`
 );
