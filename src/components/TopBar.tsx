@@ -38,8 +38,8 @@ interface TopBarProps {
 }
 
 const AVAILABLE_MODELS = [
-  { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', badge: 'Tercepat & Cerdas' },
-  { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash', badge: 'Stabil & Cepat' },
+  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', badge: 'Tercepat & Stabil' },
+  { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', badge: 'Adaptif & Cerdas' },
   { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro', badge: 'Penalaran Mendalam' },
   { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite', badge: 'Ultra Cepat' },
 ];
@@ -93,8 +93,11 @@ export const TopBar: React.FC<TopBarProps> = ({
     );
   };
 
-  const currentModelId = currentProject?.ai_model || 'gemini-3.7-flash';
-  const currentModel = AVAILABLE_MODELS.find((m) => m.id === currentModelId) || AVAILABLE_MODELS[0];
+  const currentModelId = currentProject?.ai_model || 'auto';
+  const isAuto = currentModelId === 'auto' || currentProject?.reasoning_config?.execution_policy?.mode === 'auto';
+  const currentModel = isAuto
+    ? { id: 'auto', name: 'AI Director (Auto)', badge: 'S1-S8 Task Router' }
+    : (AVAILABLE_MODELS.find((m) => m.id === currentModelId) || { id: currentModelId, name: currentModelId, badge: 'Pinned Model' });
 
   return (
     <header className="h-16 bg-[#181926] border-b border-[#26283B] px-4 sm:px-6 flex items-center justify-between z-30 sticky top-0">
@@ -198,6 +201,23 @@ export const TopBar: React.FC<TopBarProps> = ({
                 Model Produksi Gemini 3.x
               </div>
               <div className="space-y-1 mt-1.5">
+                <button
+                  onClick={() => {
+                    if (onChangeModel) onChangeModel('auto');
+                    setIsModelDropdownOpen(false);
+                  }}
+                  className={`w-full text-left px-3 py-2 rounded-xl text-xs transition flex items-center justify-between ${
+                    isAuto
+                      ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/40 font-bold'
+                      : 'hover:bg-[#24263A] text-slate-300'
+                  }`}
+                >
+                  <div>
+                    <div className="font-semibold text-amber-300">AI Director (Auto Routing)</div>
+                    <div className="text-[10px] text-slate-400">Autonomous Task Router S1-S8</div>
+                  </div>
+                  {isAuto && <CheckCircle2 className="w-4 h-4 text-amber-400" />}
+                </button>
                 {AVAILABLE_MODELS.map((model) => (
                   <button
                     key={model.id}

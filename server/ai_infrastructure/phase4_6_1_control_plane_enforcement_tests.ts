@@ -148,7 +148,10 @@ export function scanFileForEnforcementViolations(context: InspectionContext): En
     baseName === 'stage5_scene_breakdown.ts' ||
     baseName === 'stage6_shot_breakdown.ts'
   ) {
-    const hasLLMCall = context.content.includes('executeLLMRequest') || context.content.includes('aiGateway.generate');
+    const hasLLMCall = context.content.includes('executeLLMRequest') ||
+      context.content.includes('aiGateway.generate') ||
+      context.content.includes('executeTask') ||
+      context.content.includes('taskExecutor');
     if (!hasLLMCall) {
       violations.push({
         file: normPath,

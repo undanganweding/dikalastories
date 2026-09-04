@@ -1,4 +1,4 @@
-import { executeLLMRequest, safeParseJSON } from '../llm_provider';
+import { executeTask, safeParseJSON } from '../llm_provider';
 import { Type } from '../gemini';
 import { ContextPackage, LocationBible, ObjectBible, ProjectFoundation, ReasoningConfig } from '../../src/types';
 
@@ -109,14 +109,21 @@ ${input.rawScript}
     required: ['locations', 'objects'],
   };
 
-  const response = await executeLLMRequest({
-    stage: 'S3',
-    reasoningConfig: input.reasoningConfig,
-    model: input.model,
+  const response = await executeTask({
+    taskId: 'location_object_analysis',
+    stageCode: 'S3',
     prompt,
     systemInstruction: groundedSystemInstruction,
     temperature: 0.3,
     responseSchema,
+    reasoningConfig: input.reasoningConfig,
+    projectPolicy: {
+      mode: input.model ? 'pin' : 'auto',
+      quality: 'high',
+      priority: 'quality',
+      pinnedModelId: input.model,
+      pinnedProviderId: input.reasoningConfig?.provider_name || input.reasoningConfig?.provider_type,
+    },
   });
 
   if (!response.text) {

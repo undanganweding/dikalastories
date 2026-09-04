@@ -52,6 +52,7 @@ import {
   PromptTarget,
   PromptLockState,
   StudioWorkspaceTab,
+  ReasoningConfig,
 } from './types';
 
 export default function App() {
@@ -230,6 +231,12 @@ export default function App() {
     max_scene_shot_duration_sec: number | null;
     prompt_language: PromptLanguage;
     ai_model?: string;
+    reasoning_config?: ReasoningConfig;
+    image_model?: any;
+    video_model?: any;
+    include_seedance_format?: boolean;
+    allow_final_scene_override?: boolean;
+    scene_duration_sec?: number | null;
   }) => {
     setIsCreating(true);
     try {

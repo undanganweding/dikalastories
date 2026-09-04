@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { getGeminiAI, AVAILABLE_MODELS } from './gemini';
+import { getGeminiAI, AVAILABLE_MODELS, resolveGeminiModel } from './gemini';
 import { setProviderHealth } from './adaptive_router';
 
 export type TaskType = 'historical_research' | 'story_writing' | 'scene_generation' | 'json_output' | 'research' | 'narrative' | 'scene' | 'general' | 'image' | 'tts';
@@ -191,7 +191,7 @@ export class GeminiProjectRouter {
         const ai = getGeminiAI(project.api_key);
         const startTime = Date.now();
         await ai.models.generateContent({
-          model: 'gemini-3.6-flash',
+          model: 'gemini-3.8-flash',
           contents: 'ping'
         });
         const latency = Date.now() - startTime;
@@ -226,7 +226,7 @@ export class GeminiProjectRouter {
         const ai = getGeminiAI(project.api_key);
         const startTime = Date.now();
         await ai.models.generateContent({
-          model: 'gemini-3.6-flash',
+          model: 'gemini-3.8-flash',
           contents: 'ping'
         });
         const latency = Date.now() - startTime;
@@ -295,21 +295,27 @@ export class GeminiProjectRouter {
     const now = new Date();
     
     // Filter and sort candidate projects
+    const resolvedModelId = resolveGeminiModel(modelId);
     const candidates = Array.from(this.projects.values()).filter(p => {
       if (!p.enabled) return false;
-      if (p.models_available.length > 0 && !p.models_available.includes(modelId)) return false;
+      if (p.models_available.length > 0) {
+        const matches = p.models_available.includes(modelId) || 
+                        p.models_available.includes(resolvedModelId) ||
+                        p.models_available.includes('gemini-3.8-flash');
+        if (!matches) return false;
+      }
       
       // Check model-specific health
-      if (p.health.model_health && p.health.model_health[modelId]) {
-          const modelHealth = p.health.model_health[modelId];
+      if (p.health.model_health && (p.health.model_health[modelId] || p.health.model_health[resolvedModelId])) {
+          const modelHealth = p.health.model_health[modelId] || p.health.model_health[resolvedModelId];
           if ((modelHealth.status === 'rate_limited' || modelHealth.status === 'exhausted' || modelHealth.status === 'error' || modelHealth.status === 'blocked') &&
               modelHealth.cooldown_until && new Date(modelHealth.cooldown_until) > now) {
               return false;
           }
       }
 
-      // Check overall project health
-      if (p.health.status === 'exhausted' || p.health.status === 'error' || p.health.status === 'blocked') {
+      // Check overall project health (only blocked or auth-error projects are filtered out)
+      if (p.health.status === 'error' || p.health.status === 'blocked') {
         if (p.cooldown_until && new Date(p.cooldown_until) > now) {
           return false;
         }
@@ -463,37 +469,48 @@ export class GeminiProjectRouter {
     
     const errMsg = error?.message?.toLowerCase() || '';
 
+    // Extract retry delay from error message or details if provided by Google API
+    let parsedDelayMs: number | null = null;
+    const retryMatch = errMsg.match(/retry in ([\d\.]+)s/i) || errMsg.match(/retry after ([\d\.]+)s/i);
+    if (retryMatch && retryMatch[1]) {
+      const sec = parseFloat(retryMatch[1]);
+      if (!isNaN(sec) && sec > 0) parsedDelayMs = Math.ceil(sec * 1000);
+    } else if (error?.details && Array.isArray(error.details)) {
+      const retryInfo = error.details.find((d: any) => d['@type']?.includes('RetryInfo') || d?.retryDelay);
+      if (retryInfo?.retryDelay) {
+        const sec = parseInt(String(retryInfo.retryDelay), 10);
+        if (!isNaN(sec) && sec > 0) parsedDelayMs = sec * 1000;
+      }
+    }
+
     let status: 'healthy' | 'warning' | 'rate_limited' | 'error' | 'exhausted' | 'blocked' = 'error';
     let cooldownUntil: string | undefined;
 
-    if (errMsg.includes('429') || errMsg.includes('rate limit')) {
+    if (errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('quota') || errMsg.includes('resource_exhausted') || errMsg.includes('resource exhausted')) {
       status = 'rate_limited';
-      cooldownUntil = new Date(Date.now() + 60 * 1000).toISOString(); // 1 minute
+      const delayMs = parsedDelayMs ? Math.min(parsedDelayMs + 2000, 5 * 60 * 1000) : 60 * 1000;
+      cooldownUntil = new Date(Date.now() + delayMs).toISOString();
+      setProviderHealth('google', modelId, 'rate_limited', 'RATE_LIMITED', Date.now() + delayMs);
+      // Keep overall project in warning rather than exhausted so other models remain usable
+      project.health.status = 'warning';
     } else if (errMsg.includes('503') || errMsg.includes('unavailable') || errMsg.includes('high demand') || errMsg.includes('overloaded')) {
       status = 'rate_limited';
-      cooldownUntil = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 minutes
-    } else if (errMsg.includes('quota') || errMsg.includes('exhausted')) {
-      status = 'exhausted';
-      cooldownUntil = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
-    } else if (errMsg.includes('auth') || errMsg.includes('key')) {
+      const delayMs = parsedDelayMs ? Math.min(parsedDelayMs + 2000, 5 * 60 * 1000) : 5 * 60 * 1000;
+      cooldownUntil = new Date(Date.now() + delayMs).toISOString();
+      setProviderHealth('google', modelId, 'rate_limited', 'OVERLOADED', Date.now() + delayMs);
+      project.health.status = 'warning';
+    } else if (errMsg.includes('auth') || errMsg.includes('key') || errMsg.includes('unauthorized') || errMsg.includes('permission_denied') || errMsg.includes('401') || errMsg.includes('403')) {
       status = 'error';
+      project.health.status = 'error';
+      project.cooldown_until = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     } else {
       if (project.health.error_rate > 5) {
         status = 'error';
-        cooldownUntil = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 minutes
+        cooldownUntil = new Date(Date.now() + 5 * 60 * 1000).toISOString();
       }
     }
     
     project.health.model_health[modelId] = { status, cooldown_until: cooldownUntil };
-    
-    if (status === 'rate_limited' || status === 'exhausted') {
-      setProviderHealth('google', modelId, 'rate_limited', status, Date.now() + 60 * 1000);
-    }
-    
-    // Also update overall project health if it's a severe error
-    if (status === 'error' || status === 'exhausted') {
-        project.health.status = status;
-    }
   }
 
   public getLogs(): GeminiRequestLog[] {

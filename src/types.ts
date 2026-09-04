@@ -886,6 +886,13 @@ export interface ReasoningConfig {
   model_id: string;
   display_name?: string;
   api_key?: string;
+  execution_policy?: {
+    mode?: 'auto' | 'pin';
+    quality?: 'high' | 'standard';
+    priority?: 'quality' | 'speed' | 'cost';
+    pinnedModelId?: string;
+    pinnedProviderId?: string;
+  };
 }
 
 export interface GeminiModelOption {
@@ -1974,11 +1981,20 @@ export interface FullStoryPackage {
 export interface AIProvider {
   id: string;
   name: string;
-  type: 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'xai' | 'openai-compatible' | string;
-  baseUrl?: string;
+  type:
+    | 'google-generative-ai'
+    | 'openai-compatible'
+    | 'anthropic-compatible'
+    | 'ollama'
+    | 'custom-http'
+    | 'gemini'
+    | 'openai'
+    | 'anthropic'
+    | 'openrouter'
+    | 'xai';
   protocol?: string;
+  baseUrl?: string;
   description?: string;
-  metadata?: Record<string, unknown>;
   enabled: boolean;
   capabilities: {
     text: boolean;
@@ -1986,10 +2002,6 @@ export interface AIProvider {
     image: boolean;
     video: boolean;
   };
-  healthStatus?: 'connected' | 'failed' | 'unknown';
-  healthLatency?: number;
-  healthLastCheckedAt?: number;
-  healthError?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -2009,18 +2021,6 @@ export interface AICredential {
   priority: number;
   weight: number;
   lastUsedAt?: number;
-  quota?: {
-    total: number;
-    used: number;
-    remaining: number;
-    resetAt?: number;
-  };
-  usage?: {
-    totalRequests: number;
-    totalTokens: number;
-    successRate: number;
-    avgLatencyMs: number;
-  };
   createdAt: number;
   updatedAt: number;
 }
@@ -2029,11 +2029,12 @@ export interface AIModel {
   id: string;
   providerId: string;
   displayName: string;
-  tier: 'lite' | 'flash' | 'pro';
+  tier: 'lite' | 'flash' | 'pro' | 'ultra';
   capabilities: string[];
   enabled: boolean;
   contextWindow?: number;
   createdAt: number;
+  updatedAt?: number;
 }
 
 export interface AIUsage {
@@ -2073,6 +2074,66 @@ export interface AIRoutingPolicy {
   strategy: 'priority' | 'round_robin' | 'lowest_latency';
   enabled: boolean;
   createdAt: number;
+  updatedAt?: number;
+}
+
+export type AITaskId =
+  | 'story_analysis'
+  | 'character_analysis'
+  | 'location_object_analysis'
+  | 'narrative_structure'
+  | 'scene_breakdown'
+  | 'shot_breakdown'
+  | 'master_frame_generation'
+  | 'video_prompt_generation'
+  | 'general_reasoning'
+  | 'creative_generation';
+
+export interface AITaskDefinition {
+  id: AITaskId;
+  stageCode: 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'GENERAL';
+  name: string;
+  description: string;
+  requiredCapabilities: string[];
+  preferredTier: 'lite' | 'flash' | 'pro' | 'ultra';
+  contextRequirement: 'standard' | 'large' | 'massive';
+  minContextWindow: number;
+  outputFormatRequirement: 'json' | 'structured_schema' | 'markdown' | 'creative_text';
+  qualityPriority: 'critical' | 'high' | 'balanced' | 'fast';
+  speedPriority: 'normal' | 'fast' | 'high_throughput';
+  recommendedFallbackStrategy: 'tier_downgrade' | 'cross_provider' | 'retry_with_reduced_context' | 'strict_quality';
+}
+
+export interface TaskExecutionPlan {
+  taskId: AITaskId;
+  stageCode?: string;
+  providerId: string;
+  modelId: string;
+  credentialId: string;
+  apiKey?: string;
+  score: number;
+  reasons: string[];
+  candidateEvaluation?: {
+    totalCandidates: number;
+    eligibleCandidates: number;
+    selectedModelTier: string;
+    contextWindow: number;
+  };
+  decisionTimestamp: number;
+}
+
+export interface TaskRouterRequest {
+  taskId?: AITaskId | string;
+  stageCode?: string;
+  projectPolicy?: {
+    mode?: 'auto' | 'custom' | 'pin';
+    quality?: 'critical' | 'high' | 'standard' | 'balanced' | 'fast';
+    priority?: 'quality' | 'balanced' | 'speed' | 'cost';
+    pinnedModelId?: string;
+    pinnedProviderId?: string;
+    preferredProvider?: string;
+    maxCostPerToken?: number;
+  };
 }
 
 

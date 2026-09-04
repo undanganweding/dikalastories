@@ -1,4 +1,4 @@
-import { executeLLMRequest, safeParseJSON } from '../llm_provider';
+import { executeTask, safeParseJSON } from '../llm_provider';
 import { Type } from '../gemini';
 import { CharacterBible, ContextPackage, LocationBible, NarrativeBeats, ProjectFoundation, ReasoningConfig } from '../../src/types';
 import { buildNarrativeVoiceInstruction } from '../narrative_tone';
@@ -89,14 +89,21 @@ ${input.rawScript}
     required: ['beginning', 'development', 'climax', 'consequence', 'ending'],
   };
 
-  const response = await executeLLMRequest({
-    stage: 'S4',
-    reasoningConfig: input.reasoningConfig,
-    model: input.model,
+  const response = await executeTask({
+    taskId: 'narrative_structure',
+    stageCode: 'S4',
     prompt,
     systemInstruction,
     temperature: 0.3,
     responseSchema,
+    reasoningConfig: input.reasoningConfig,
+    projectPolicy: {
+      mode: input.model ? 'pin' : 'auto',
+      quality: 'high',
+      priority: 'quality',
+      pinnedModelId: input.model,
+      pinnedProviderId: input.reasoningConfig?.provider_name || input.reasoningConfig?.provider_type,
+    },
   });
 
   if (!response.text) {

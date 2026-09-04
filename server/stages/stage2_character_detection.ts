@@ -1,4 +1,4 @@
-import { executeLLMRequest, safeParseJSON } from '../llm_provider';
+import { executeTask, safeParseJSON } from '../llm_provider';
 import { Type } from '../gemini';
 import { CharacterBible, ContextPackage, ProjectFoundation, ReasoningConfig } from '../../src/types';
 
@@ -130,14 +130,21 @@ ${input.rawScript}
     },
   };
 
-  const response = await executeLLMRequest({
-    stage: 'S2',
-    reasoningConfig: input.reasoningConfig,
-    model: input.model,
+  const response = await executeTask({
+    taskId: 'character_analysis',
+    stageCode: 'S2',
     prompt,
     systemInstruction: groundedSystemInstruction,
     temperature: 0.3,
     responseSchema,
+    reasoningConfig: input.reasoningConfig,
+    projectPolicy: {
+      mode: input.model ? 'pin' : 'auto',
+      quality: 'high',
+      priority: 'quality',
+      pinnedModelId: input.model,
+      pinnedProviderId: input.reasoningConfig?.provider_name || input.reasoningConfig?.provider_type,
+    },
   });
 
   if (!response.text) {

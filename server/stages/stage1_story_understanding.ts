@@ -1,4 +1,4 @@
-import { executeLLMRequest, safeParseJSON } from '../llm_provider';
+import { executeTask, safeParseJSON } from '../llm_provider';
 import { Type } from '../gemini';
 import { ContextPackage, ProjectFoundation, ReasoningConfig } from '../../src/types';
 import { buildNarrativeVoiceInstruction, validateNarrativeStyle } from '../narrative_tone';
@@ -213,14 +213,21 @@ Output in English/Indonesian as appropriate with high narrative dignity.`;
     ],
   };
 
-  const response = await executeLLMRequest({
-    stage: 'S1',
-    reasoningConfig: input.reasoningConfig,
-    model: input.model,
+  const response = await executeTask({
+    taskId: 'story_analysis',
+    stageCode: 'S1',
     prompt,
     systemInstruction,
     temperature: 0.3,
     responseSchema,
+    reasoningConfig: input.reasoningConfig,
+    projectPolicy: {
+      mode: input.model ? 'pin' : 'auto',
+      quality: 'high',
+      priority: 'quality',
+      pinnedModelId: input.model,
+      pinnedProviderId: input.reasoningConfig?.provider_name || input.reasoningConfig?.provider_type,
+    },
   });
 
   if (!response.text) {

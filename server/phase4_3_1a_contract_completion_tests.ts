@@ -342,6 +342,7 @@ async function runTests() {
   console.log('\n================================================================');
   console.log('    ALL CONTRACT COMPLETION TEST SCENARIOS PASSED (100%)       ');
   console.log('================================================================');
+  process.exit(0);
 }
 
 runTests().catch(err => {

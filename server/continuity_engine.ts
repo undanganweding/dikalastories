@@ -25,7 +25,7 @@ import {
 /**
  * Extracts structured costume breakdown from freeform character clothing descriptions
  */
-export function extractCostumeStructure(clothing: string[], characterName: string, gender: string): CostumeStructure {
+export function extractCostumeStructure(clothing: string[] | string | undefined | null, characterName: string, gender: string): CostumeStructure {
   const structure: CostumeStructure = {
     accessories: [],
     colors: [],
@@ -33,7 +33,11 @@ export function extractCostumeStructure(clothing: string[], characterName: strin
     distinctive_details: [],
   };
 
-  const fullText = clothing.join(' ').toLowerCase();
+  const clothingArr = Array.isArray(clothing)
+    ? clothing
+    : (typeof clothing === 'string' && clothing.trim() ? [clothing.trim()] : []);
+
+  const fullText = clothingArr.join(' ').toLowerCase();
 
   // Head cover detection (Hijab, Khimar, Turban, Kufi, Scarf, Veil, etc.)
   if (
@@ -47,7 +51,7 @@ export function extractCostumeStructure(clothing: string[], characterName: strin
     fullText.includes('kufi') ||
     fullText.includes('penutup kepala')
   ) {
-    const matched = clothing.find(c => {
+    const matched = clothingArr.find(c => {
       const lc = c.toLowerCase();
       return (
         lc.includes('hijab') ||
@@ -69,7 +73,7 @@ export function extractCostumeStructure(clothing: string[], characterName: strin
   }
 
   // Outer garment detection (Robe, Jubah, Cloak, Abaya, Gamis, Tunik)
-  const outerMatch = clothing.find(c => {
+  const outerMatch = clothingArr.find(c => {
     const lc = c.toLowerCase();
     return (
       lc.includes('jubah') ||
@@ -91,7 +95,7 @@ export function extractCostumeStructure(clothing: string[], characterName: strin
   }
 
   // Footwear detection (Sandals, Boots, etc.)
-  const footwearMatch = clothing.find(c => {
+  const footwearMatch = clothingArr.find(c => {
     const lc = c.toLowerCase();
     return lc.includes('sandal') || lc.includes('sepatu') || lc.includes('alas kaki') || lc.includes('boots');
   });
@@ -112,7 +116,7 @@ export function extractCostumeStructure(clothing: string[], characterName: strin
     'cream', 'krem', 'putih', 'white', 'hitam', 'black', 'cokelat', 'brown', 'earth-tone',
     'abu-abu', 'grey', 'gray', 'emas', 'gold', 'merah', 'red', 'biru', 'blue', 'hijau', 'green'
   ];
-  for (const item of clothing) {
+  for (const item of clothingArr) {
     const lc = item.toLowerCase();
     for (const color of colorKeywords) {
       if (lc.includes(color) && !structure.colors?.includes(color)) {

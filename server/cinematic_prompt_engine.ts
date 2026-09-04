@@ -776,6 +776,8 @@ export function serializeLockedCostume(characters: any[], isLocked: boolean): st
         attireStr = c.wardrobe;
       } else if (Array.isArray(c.clothing) && c.clothing.length > 0) {
         attireStr = c.clothing.join(', ');
+      } else if (typeof c.clothing === 'string' && c.clothing.trim()) {
+        attireStr = c.clothing.trim();
       } else {
         attireStr = 'Period-appropriate authentic costume';
       }
@@ -952,7 +954,7 @@ MOOD: ${data.mood.emotion} (Tension: ${data.mood.tension})
 MATERIAL REALISM: ${data.visual_style.material_realism}
 VISUAL STYLE: ${data.visual_style.cinematic_style}, ${data.visual_style.film_texture}
 CONTINUITY: Strict historical costume, prop, and location consistency lock.${unifiedInvariantContract}
-HISTORICAL ACCURACY: Verified period architecture, authentic woven textiles, and accurate historical props (${data.location.props.join(', ')}).
+HISTORICAL ACCURACY: Verified period architecture, authentic woven textiles, and accurate historical props (${Array.isArray(data.location.props) ? data.location.props.join(', ') : (data.location.props || 'authentic props')}).
 SAFETY RESTRICTIONS: ${safetyInfo}
 NEGATIVE PROMPT: ${compileNegativePrompt(data)}`;
 
@@ -1715,6 +1717,8 @@ export function validateProductionPromptContract(
             attireStr = (c as any).wardrobe;
           } else if (Array.isArray((c as any).clothing) && (c as any).clothing.length > 0) {
             attireStr = (c as any).clothing.join(', ');
+          } else if (typeof (c as any).clothing === 'string' && (c as any).clothing.trim()) {
+            attireStr = (c as any).clothing.trim();
           } else {
             attireStr = 'Period-appropriate authentic costume';
           }

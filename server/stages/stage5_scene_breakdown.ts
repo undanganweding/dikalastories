@@ -1,4 +1,4 @@
-import { executeLLMRequest, safeParseJSON } from '../llm_provider';
+import { executeTask, safeParseJSON } from '../llm_provider';
 import { Type } from '../gemini';
 import { ContextPackage, NarrativeBeats, ReasoningConfig, Scene } from '../../src/types';
 import { buildNarrativeVoiceInstruction, recommendSceneTone } from '../narrative_tone';
@@ -496,21 +496,31 @@ Max Scene Duration Ceiling: ${input.maxSceneDurationSec} detik per scene`;
     },
   };
 
-  const response = await executeLLMRequest({
-    stage: 'S5',
-    reasoningConfig: input.reasoningConfig,
-    model: input.model,
+  const response = await executeTask({
+    taskId: 'scene_breakdown',
+    stageCode: 'S5',
     prompt,
     systemInstruction,
     temperature: 0.2,
     responseSchema,
+    reasoningConfig: input.reasoningConfig,
+    projectPolicy: {
+      mode: input.model ? 'pin' : 'auto',
+      quality: 'high',
+      priority: 'quality',
+      pinnedModelId: input.model,
+      pinnedProviderId: input.reasoningConfig?.provider_name || input.reasoningConfig?.provider_type,
+    },
   });
 
   if (!response.text) {
     throw new Error('Stage 5 failed: LLM provider returned an empty response.');
   }
 
-  const parsed = safeParseJSON(response.text) as DetectedScene[];
+  const parsedJson = safeParseJSON(response.text);
+  const parsed: DetectedScene[] = Array.isArray(parsedJson)
+    ? parsedJson
+    : (parsedJson?.scenes && Array.isArray(parsedJson.scenes) ? parsedJson.scenes : []);
 
   // System Assignment of Scene Durations & Recommended Scene Tone
   const sanitizedScenes: DetectedScene[] = parsed.map((sc, idx) => {

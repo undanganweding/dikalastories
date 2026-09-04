@@ -13,8 +13,8 @@ interface SettingsWorkspaceProps {
 }
 
 const AVAILABLE_MODELS = [
-  { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', desc: 'Model paling cerdas & cepat untuk orkestrasi sinematik' },
-  { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash', desc: 'Stabil dan optimal untuk eksekusi pipeline masif' },
+  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', desc: 'Model paling cerdas, stabil, dengan batas kuota optimal' },
+  { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', desc: 'Model adaptif & cepat untuk orkestrasi sinematik' },
   { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro Preview', desc: 'Kemampuan penalaran mendalam dan logika skenario' },
   { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite', desc: 'Ultra cepat untuk iterasi cepat' },
   { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', desc: 'Model stabil generasi sebelumnya' },
@@ -22,14 +22,14 @@ const AVAILABLE_MODELS = [
 
 export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({ project, onChangeModel, onUpdateProject, onDeleteProject }) => {
   const { openWindow } = useWindowManager();
-  const currentModelId = project?.ai_model || 'gemini-3.7-flash';
+  const currentModelId = project?.ai_model || 'gemini-3.8-flash';
   const prefs = project?.reasoning_model_preferences || {
     mode: 'fixed',
     primary_model: { provider: 'google', model_id: currentModelId },
     fallback_policy: 'smart',
     fallback_pool: [
-      { provider: 'google', model_id: 'gemini-3.7-flash', priority: 1 },
-      { provider: 'google', model_id: 'gemini-3.6-flash', priority: 2 },
+      { provider: 'google', model_id: 'gemini-3.8-flash', priority: 1 },
+      { provider: 'google', model_id: 'gemini-3.7-flash', priority: 2 },
     ],
   };
 

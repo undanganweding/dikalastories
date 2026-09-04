@@ -32,8 +32,8 @@ interface OrchestratorViewProps {
 }
 
 const AVAILABLE_MODELS_LIST = [
-  { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash (Direkomendasikan)' },
-  { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash (Cepat & Stabil)' },
+  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (Direkomendasikan)' },
+  { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash (Adaptif & Cepat)' },
   { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro (Penalaran Mendalam)' },
   { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite (Ultra Cepat)' },
 ];

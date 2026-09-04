@@ -297,25 +297,18 @@ export const quotaRouter = {
       // Keep getCredentialState for backwards-compatibility of return type "state"
       const state = await this.getCredentialState(cred.id);
 
-      // Score using real usage metrics (accuracy + latency) + priority preference.
-      const usage = cred.usage || { totalRequests: 0, totalTokens: 0, successRate: 100, avgLatencyMs: 0 };
+      // Score strictly by priority (cred.priority: lower number = higher priority)
       const priority = cred.priority || 1;
       const statePenalty = state === 'WARNING' ? 5 : 0;
-
-      // Accuracy component: higher success rate scores higher (0-40)
-      const accuracyScore = Math.round((usage.successRate / 100) * 40);
-      // Latency component: lower latency scores higher (0-30). 300ms => 30, 1500ms => ~0.
-      const latencyScore = Math.max(0, 30 - Math.round(usage.avgLatencyMs / 50));
-      // Priority preference: lower priority number = higher score (0-20)
-      const priorityScore = Math.max(0, 20 - priority);
-
-      const totalScore = accuracyScore + latencyScore + priorityScore - statePenalty;
+      
+      // Compute a fully deterministic score where highest priority has highest score
+      const totalScore = 1000 - (priority * 10) - statePenalty;
 
       scored.push({
         credential: cred,
         healthStatus: opState.healthState.toLowerCase(),
-        successRate: usage.successRate,
-        avgLatencyMs: usage.avgLatencyMs,
+        successRate: 100, // bypassed
+        avgLatencyMs: 0, // completely bypass latency monitoring
         score: totalScore,
         state,
       });
@@ -330,20 +323,19 @@ export const quotaRouter = {
     return scored;
   },
 
-  // Determine Active Provider (protocol-aware, no hardcoded provider name preference)
+  // Determine Active Provider under Strict Provider Priority (Priority 1: Custom, Priority 2: Google)
   async determineActiveProvider(): Promise<string> {
     const providers = await providerService.listProviders();
-    const enabledProviders = providers.filter(p => p.enabled);
+    const customProviders = providers.filter(p => p.id !== 'google' && p.enabled);
 
-    for (const p of enabledProviders) {
+    for (const p of customProviders) {
       const state = await this.getProviderOperationalState(p.id);
       if (state.eligibility) {
-        return p.id; // First eligible provider wins
+        return p.id; // Priority 1: Healthy custom provider
       }
     }
 
-    // Fallback: return first enabled provider that exists, else default to 'google'
-    if (enabledProviders.length > 0) return enabledProviders[0].id;
+    // Priority 2: Fallback to Google
     return 'google';
   },
 

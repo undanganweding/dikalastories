@@ -54,16 +54,22 @@ export const ProjectsWorkspace: React.FC = () => {
 
   // Dynamic Provider Options
   const providerOptions = useMemo(() => {
-    const list = providers.map((p) => ({
+    return providers.map((p) => ({
       id: p.id,
       name: p.name,
-      desc: p.type === 'openai-compatible' ? `OpenAI-Compatible (${p.baseUrl})` : 'Google Gemini Flash / Pro',
+      desc:
+        p.type === 'openai-compatible'
+          ? `OpenAI-Compatible (${p.baseUrl || '/v1'})`
+          : 'Google Generative AI / Gemini',
     }));
-    if (list.length === 0 || !list.some(p => p.id === 'google')) {
-      list.unshift({ id: 'google', name: 'Google Gemini', desc: 'Gemini 3.7 Flash, 2.5 Pro, 3.5 Flash Lite' });
-    }
-    return list;
   }, [providers]);
+
+  // Keep selected providerId valid
+  React.useEffect(() => {
+    if (providerOptions.length > 0 && !providerOptions.some((p) => p.id === providerId)) {
+      setProviderId(providerOptions[0].id);
+    }
+  }, [providerOptions, providerId]);
 
   // Filtered credentials
   const filteredCredentials = useMemo(() => {

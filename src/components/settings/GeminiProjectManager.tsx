@@ -13,7 +13,7 @@ export const GeminiProjectManager: React.FC = () => {
   const [projectId, setProjectId] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [priority, setPriority] = useState<number>(1);
-  const [models, setModels] = useState<string>('gemini-3.7-flash, gemini-3.6-flash, gemini-3.1-pro');
+  const [models, setModels] = useState<string>('gemini-3.8-flash, gemini-3.7-flash, gemini-3.1-pro');
 
   const [actionMessage, setActionMessage] = useState<{ id: string; text: string; success: boolean } | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -72,7 +72,7 @@ export const GeminiProjectManager: React.FC = () => {
         setProjectId('');
         setApiKey('');
         setPriority(1);
-        setModels('gemini-3.7-flash, gemini-3.6-flash, gemini-3.1-pro');
+        setModels('gemini-3.8-flash, gemini-3.7-flash, gemini-3.1-pro');
         fetchProjects();
       } else {
         const err = await res.json();
@@ -160,7 +160,7 @@ export const GeminiProjectManager: React.FC = () => {
             setProjectId('');
             setApiKey('');
             setPriority(1);
-            setModels('gemini-3.7-flash, gemini-3.6-flash, gemini-3.1-pro');
+            setModels('gemini-3.8-flash, gemini-3.7-flash, gemini-3.1-pro');
             setShowAddModal(true);
           }}
           className="flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold font-mono rounded-lg transition-colors"

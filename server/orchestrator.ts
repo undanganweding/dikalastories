@@ -1,6 +1,8 @@
 import { db } from './db';
 import { modelRouter } from './model_router';
 import { DEFAULT_TASK_PROFILES } from './adaptive_router';
+import { taskRouter } from './ai_infrastructure/task_router';
+import { getTaskByStageCode } from './ai_infrastructure/task_registry';
 import { runStage1StoryUnderstanding } from './stages/stage1_story_understanding';
 import { runStage2CharacterDetection } from './stages/stage2_character_detection';
 import { runStage3LocationObjectDetection } from './stages/stage3_location_object_detection';
@@ -91,11 +93,27 @@ export interface OrchestratorRunOptions {
 // (HTTP 429 RESOURCE_EXHAUSTED) twice as fast and trips the retry/backoff loop
 // that surfaces as a frozen pipeline at a later stage.
 const initializationInFlight = new Map<string, Promise<{ success: boolean; error?: string }>>();
+const initializationListeners = new Map<
+  string,
+  Set<(stage: number, stageName: string, message: string, level?: 'info' | 'success' | 'warn' | 'error') => void>
+>();
 const orchestratedPipelineInFlight = new Map<string, Promise<{ success: boolean; error?: string; runId?: string }>>();
+const orchestratedPipelineListeners = new Map<
+  string,
+  Set<(stage: number, stageName: string, message: string, level?: 'info' | 'success' | 'warn' | 'error') => void>
+>();
 const generateAllScenesInFlight = new Map<string, Promise<{ success: boolean; totalScenes: number; readyScenes: number; failedScenes: number }>>();
 const singleScenePipelineInFlight = new Map<string, Promise<ScenePipelineResult>>();
 
 export const stoppedProjects = new Set<string>();
+
+export function isPipelineInFlight(projectId: string): boolean {
+  return orchestratedPipelineInFlight.has(projectId) || initializationInFlight.has(projectId);
+}
+
+export function isInitializationInFlight(projectId: string): boolean {
+  return initializationInFlight.has(projectId);
+}
 
 export class PipelineStoppedError extends Error {
   constructor() {
@@ -106,7 +124,9 @@ export class PipelineStoppedError extends Error {
 
 export function resetPipelineInFlightLocks(): void {
   initializationInFlight.clear();
+  initializationListeners.clear();
   orchestratedPipelineInFlight.clear();
+  orchestratedPipelineListeners.clear();
   generateAllScenesInFlight.clear();
   singleScenePipelineInFlight.clear();
   stoppedProjects.clear();
@@ -117,6 +137,21 @@ export async function resolveStageModel(
   fallbackTask: import('./model_router').TaskType,
   fallbackComplexity: 'LOW' | 'MEDIUM' | 'HIGH' = 'MEDIUM'
 ): Promise<string> {
+  const taskDef = getTaskByStageCode(stageCode);
+  if (taskDef) {
+    try {
+      const plan = await taskRouter.resolveTaskExecutionPlan({
+        taskId: taskDef.id,
+        stageCode,
+      });
+      if (plan?.modelId) {
+        return plan.modelId;
+      }
+    } catch {
+      // fallback if task router fails
+    }
+  }
+
   const profile = DEFAULT_TASK_PROFILES[stageCode];
   if (profile?.default_model) {
     return profile.default_model;
@@ -439,10 +474,23 @@ export function runProjectInitialization(
   const existing = initializationInFlight.get(projectId);
   if (existing) {
     console.log(`[init] JOIN in-flight initialization project=${projectId}`);
+    if (onProgress) {
+      if (!initializationListeners.has(projectId)) {
+        initializationListeners.set(projectId, new Set());
+      }
+      initializationListeners.get(projectId)!.add(onProgress);
+    }
     return existing;
+  }
+  if (onProgress) {
+    if (!initializationListeners.has(projectId)) {
+      initializationListeners.set(projectId, new Set());
+    }
+    initializationListeners.get(projectId)!.add(onProgress);
   }
   const promise = runProjectInitializationImpl(projectId, onProgress, dependencies).finally(() => {
     initializationInFlight.delete(projectId);
+    initializationListeners.delete(projectId);
   });
   initializationInFlight.set(projectId, promise);
   return promise;
@@ -482,8 +530,21 @@ async function runProjectInitializationImpl(
       duration_ms: durationMs,
       error_type: errorType,
     });
-    if (onProgress) {
-      onProgress(stage, stageName, message, level);
+    const listeners = initializationListeners.get(projectId);
+    if (listeners && listeners.size > 0) {
+      for (const listener of listeners) {
+        try {
+          listener(stage, stageName, message, level);
+        } catch {
+          // Progress notification failure must be strictly non-fatal to backend pipeline
+        }
+      }
+    } else if (onProgress) {
+      try {
+        onProgress(stage, stageName, message, level);
+      } catch {
+        // Non-fatal
+      }
     }
   };
 
@@ -618,10 +679,8 @@ async function runProjectInitializationImpl(
     } else {
       const s1Start = new Date().toISOString();
       const s1StartTime = Date.now();
-      // Dynamically resolve model with TaskProfile authority
-      const selectedModelId = await resolveStageModel('S1', 'research', 'HIGH');
-      console.log(`[stage1] START stage=S1 project=${projectId} model=${selectedModelId} ts=${s1Start}`);
-      log(1, 'Story Understanding', `Memulai analisis naskah & fondasi cerita sinematik [Model: ${selectedModelId}]...`, 'info', 'S1');
+      console.log(`[stage1] START stage=S1 project=${projectId} taskId=story_analysis ts=${s1Start}`);
+      log(1, 'Story Understanding', `Memulai analisis naskah & fondasi cerita sinematik via Task Router [story_analysis]...`, 'info', 'S1');
       recordTelemetry(projectId, {
         stage: 1,
         stage_code: 'S1',
@@ -639,7 +698,7 @@ async function runProjectInitializationImpl(
           rawScript: project.raw_script,
           contextPackage: groundedProject.contextPackage || null,
           language: project.prompt_language,
-          model: selectedModelId, // Use dynamically resolved model
+          model: project.reasoning_config?.model_id,
           reasoningConfig: project.reasoning_config,
         };
         stage1Result = await stage1Runner(stage1Input);
@@ -1739,7 +1798,7 @@ async function runPipelineForSceneImpl(
         videoModels: project.video_model || ['veo'],
         includeSeedance: !!project.include_seedance_format,
         language: project.prompt_language,
-        model: project.ai_model,
+        model: project.ai_model === 'auto' ? undefined : project.ai_model,
         reasoningConfig: project.reasoning_config,
         contextPackage: project.contextPackage || null,
         continuityState: sceneContinuityState,
@@ -2308,10 +2367,23 @@ export function runOrchestratedPipeline(
   const existing = orchestratedPipelineInFlight.get(options.projectId);
   if (existing) {
     console.log(`[pipeline] JOIN in-flight orchestrated pipeline project=${options.projectId}`);
+    if (options.onProgress) {
+      if (!orchestratedPipelineListeners.has(options.projectId)) {
+        orchestratedPipelineListeners.set(options.projectId, new Set());
+      }
+      orchestratedPipelineListeners.get(options.projectId)!.add(options.onProgress);
+    }
     return existing;
+  }
+  if (options.onProgress) {
+    if (!orchestratedPipelineListeners.has(options.projectId)) {
+      orchestratedPipelineListeners.set(options.projectId, new Set());
+    }
+    orchestratedPipelineListeners.get(options.projectId)!.add(options.onProgress);
   }
   const promise = runOrchestratedPipelineImpl(options).finally(() => {
     orchestratedPipelineInFlight.delete(options.projectId);
+    orchestratedPipelineListeners.delete(options.projectId);
   });
   orchestratedPipelineInFlight.set(options.projectId, promise);
   return promise;
@@ -2336,8 +2408,21 @@ async function runOrchestratedPipelineImpl({
     level: 'info' | 'success' | 'warn' | 'error' = 'info'
   ) => {
     safeAddLog(projectId, { stage, stage_name: stageName, message, level, run_id: activeRunContext.runId });
-    if (onProgress) {
-      onProgress(stage, stageName, message, level);
+    const listeners = orchestratedPipelineListeners.get(projectId);
+    if (listeners && listeners.size > 0) {
+      for (const listener of listeners) {
+        try {
+          listener(stage, stageName, message, level);
+        } catch {
+          // Progress notification failure must be strictly non-fatal to backend pipeline
+        }
+      }
+    } else if (onProgress) {
+      try {
+        onProgress(stage, stageName, message, level);
+      } catch {
+        // Non-fatal
+      }
     }
   };
 

@@ -8,6 +8,8 @@ import {
   generateAllScenes,
   verifyProjectFoundation,
   stoppedProjects,
+  isPipelineInFlight,
+  isInitializationInFlight,
 } from './orchestrator';
 import {
   AVAILABLE_MODELS,
@@ -110,15 +112,22 @@ export const apiRouter = Router();
 const sseClients: Record<string, Response[]> = {};
 
 function broadcastSSE(projectId: string, data: any) {
-  const clients = sseClients[projectId] || [];
+  const clients = sseClients[projectId];
+  if (!clients || clients.length === 0) return;
   const payload = `data: ${JSON.stringify(data)}\n\n`;
+  const activeClients: Response[] = [];
   for (const client of clients) {
     try {
+      if (client.writableEnded || client.destroyed) {
+        continue;
+      }
       client.write(payload);
+      activeClients.push(client);
     } catch {
-      // client disconnected
+      // client disconnected cleanly ignored
     }
   }
+  sseClients[projectId] = activeClients;
 }
 
 // Health check
@@ -541,10 +550,24 @@ apiRouter.post('/projects', async (req: Request, res: Response) => {
 
     const language: PromptLanguage = prompt_language === 'en' ? 'en' : 'id';
     
+    const isAutoRouting = !ai_model || ai_model === 'auto' || reasoning_config?.execution_policy?.mode === 'auto' || reasoning_config?.model_id === 'auto';
+    
     let effectiveReasoningConfig: ReasoningConfig | undefined = reasoning_config;
-    let selectedModel = ai_model || 'gemini-3.7-flash';
+    let selectedModel = isAutoRouting ? 'auto' : (ai_model || 'auto');
 
-    if (effectiveReasoningConfig) {
+    if (isAutoRouting) {
+      effectiveReasoningConfig = {
+        provider_type: 'google',
+        provider_name: 'AI Director (Auto Routing)',
+        model_id: 'auto',
+        display_name: 'AI Director (Task Router S1-S8)',
+        execution_policy: {
+          mode: 'auto',
+          quality: reasoning_config?.execution_policy?.quality || 'high',
+          priority: reasoning_config?.execution_policy?.priority || 'quality',
+        },
+      };
+    } else if (effectiveReasoningConfig) {
       if (effectiveReasoningConfig.provider_type === 'google') {
         selectedModel = resolveGeminiModel(effectiveReasoningConfig.model_id || ai_model);
         effectiveReasoningConfig.model_id = selectedModel;
@@ -558,6 +581,11 @@ apiRouter.post('/projects', async (req: Request, res: Response) => {
         provider_name: 'Google Gemini',
         model_id: selectedModel,
         display_name: selectedModel,
+        execution_policy: {
+          mode: 'pin',
+          pinnedModelId: selectedModel,
+          pinnedProviderId: 'google',
+        },
       };
     }
 
@@ -574,8 +602,8 @@ apiRouter.post('/projects', async (req: Request, res: Response) => {
       },
       fallback_policy: 'smart',
       fallback_pool: [
-        { provider: 'google', model_id: 'gemini-3.7-flash', priority: 1, display_name: 'Gemini 3.7 Flash' },
-        { provider: 'google', model_id: 'gemini-3.6-flash', priority: 2, display_name: 'Gemini 3.6 Flash' },
+        { provider: 'google', model_id: 'gemini-3.8-flash', priority: 1, display_name: 'Gemini 3.8 Flash' },
+        { provider: 'google', model_id: 'gemini-3.7-flash', priority: 2, display_name: 'Gemini 3.7 Flash' },
         { provider: 'google', model_id: 'gemini-3.1-pro-preview', priority: 3, display_name: 'Gemini 3.1 Pro Preview' },
       ],
       force_model: false,
@@ -640,6 +668,41 @@ apiRouter.patch('/projects/:id', async (req: Request, res: Response) => {
       reasoning_model_preferences,
     } = req.body;
 
+    let updatedReasoningConfig: ReasoningConfig | undefined = reasoning_config || project.reasoning_config;
+    let resolvedModel = project.ai_model || 'auto';
+
+    if (ai_model !== undefined) {
+      if (!ai_model || ai_model === 'auto') {
+        resolvedModel = 'auto';
+        updatedReasoningConfig = {
+          provider_type: 'google',
+          provider_name: 'AI Director (Auto Routing)',
+          model_id: 'auto',
+          display_name: 'AI Director (Task Router S1-S8)',
+          execution_policy: {
+            mode: 'auto',
+            quality: updatedReasoningConfig?.execution_policy?.quality || 'high',
+            priority: updatedReasoningConfig?.execution_policy?.priority || 'quality',
+          },
+        };
+      } else {
+        resolvedModel = resolveGeminiModel(ai_model);
+        updatedReasoningConfig = {
+          ...(updatedReasoningConfig || { provider_type: 'google', provider_name: 'Google Gemini' }),
+          model_id: resolvedModel,
+          display_name: resolvedModel,
+          execution_policy: {
+            mode: 'pin',
+            pinnedModelId: resolvedModel,
+            pinnedProviderId: updatedReasoningConfig?.provider_type || 'google',
+            priority: updatedReasoningConfig?.execution_policy?.priority || 'quality',
+          },
+        };
+      }
+    } else if (reasoning_config) {
+      resolvedModel = reasoning_config.model_id || 'auto';
+    }
+
     const updated: Project = {
       ...project,
       ...(title && { title: title.trim() }),
@@ -652,8 +715,8 @@ apiRouter.patch('/projects/:id', async (req: Request, res: Response) => {
             : Math.min(30, Math.max(5, Number(max_scene_shot_duration_sec))),
       }),
       ...(prompt_language && { prompt_language: prompt_language === 'en' ? 'en' : 'id' }),
-      ...(ai_model && { ai_model: resolveGeminiModel(ai_model) }),
-      ...(reasoning_config && { reasoning_config }),
+      ai_model: resolvedModel,
+      reasoning_config: updatedReasoningConfig,
       ...(reasoning_model_preferences && { reasoning_model_preferences }),
       ...(video_model && { video_model }),
       ...(include_seedance_format !== undefined && { include_seedance_format: Boolean(include_seedance_format) }),
@@ -725,6 +788,15 @@ apiRouter.post('/projects/:id/initialize-foundation', async (req: Request, res: 
     const project = await db.getProject(id);
     if (!project) {
       return res.status(404).json({ error: 'Project tidak ditemukan.' });
+    }
+
+    if (isInitializationInFlight(id) || isPipelineInFlight(id)) {
+      return res.json({
+        status: 'joined',
+        message: 'Inisialisasi fondasi proyek sudah berjalan; bergabung ke proses yang aktif.',
+        projectId: id,
+        inFlight: true,
+      });
     }
 
     res.json({
@@ -822,6 +894,15 @@ apiRouter.post('/projects/:id/generate', async (req: Request, res: Response) => 
     const project = await db.getProject(id);
     if (!project) {
       return res.status(404).json({ error: 'Project tidak ditemukan.' });
+    }
+
+    if (isPipelineInFlight(id)) {
+      return res.json({
+        status: 'joined',
+        message: 'Pipeline sudah berjalan; bergabung ke pipeline yang sedang aktif.',
+        projectId: id,
+        inFlight: true,
+      });
     }
 
     const concurrency = Number(req.body.concurrency) || 2;
@@ -1102,7 +1183,8 @@ apiRouter.post('/scenes/:id/regenerate-prompt', async (req: Request, res: Respon
         locations,
         objects,
         language: project?.prompt_language || 'id',
-        model: project?.ai_model,
+        model: project?.ai_model === 'auto' ? undefined : project?.ai_model,
+        reasoningConfig: project?.reasoning_config,
         requestedDuration,
       });
 

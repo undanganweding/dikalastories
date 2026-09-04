@@ -567,6 +567,7 @@ async function runPhase43Tests() {
         resolve();
       });
     });
+    process.exit(0);
   }
 }
 

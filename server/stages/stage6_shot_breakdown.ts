@@ -1,4 +1,4 @@
-import { executeLLMRequest, safeParseJSON } from '../llm_provider';
+import { executeTask, safeParseJSON } from '../llm_provider';
 import { Type } from '../gemini';
 import { ContextPackage, Scene, CharacterBible, LocationBible, ObjectBible, Shot, ReasoningConfig } from '../../src/types';
 import {
@@ -287,10 +287,10 @@ Peristiwa Scene: ${scene.event}
 Scene Tone: Preset=${sceneTone.preset || 'CUSTOM'}, Atmosphere=${sceneTone.atmosphere}, Pacing=${sceneTone.pacing}, Intensity=${sceneTone.intensity}/100, Tension=${sceneTone.dramatic_tension}/100
 
 === BIBLE KARAKTER TERKAIT ===
-${relevantCharacters.map((c) => `- ${c.name}: ${c.physical_appearance}, Pakaian: ${c.clothing.join(', ')}, Wajah Terkunci: ${c.face_identity_locked}`).join('\n') || 'Tidak ada karakter spesifik'}
+${relevantCharacters.map((c) => `- ${c.name}: ${c.physical_appearance}, Pakaian: ${Array.isArray(c.clothing) ? c.clothing.join(', ') : (c.clothing || 'Standard')}, Wajah Terkunci: ${c.face_identity_locked}`).join('\n') || 'Tidak ada karakter spesifik'}
 
 === BIBLE LOKASI TERKAIT ===
-${relevantLocation ? `Nama: ${relevantLocation.name}\nEra: ${relevantLocation.era}\nArsitektur & Lingkungan: ${relevantLocation.architecture}, ${relevantLocation.environment}\nPencahayaan: ${relevantLocation.lighting_style}` : 'Lokasi Umum'}
+${relevantLocation ? `Nama: ${relevantLocation.name}\nEra: ${relevantLocation.era}\nLingkungan: ${relevantLocation.environment}\nPencahayaan: ${relevantLocation.lighting_style}\nDetail Ruang: ${(relevantLocation as any).spatial_details || ''}` : 'Lokasi Umum'}
 
 === BIBLE OBJEK TERKAIT ===
 ${objects.map((o) => `- ${o.name} (${o.category}): ${o.description}`).join('\n') || 'None'}
@@ -301,15 +301,22 @@ Buat 1 record produksi lengkap untuk scene ini dengan durasi pas ${scene.duratio
 Kembalikan format JSON sesuai schema.
 `;
 
-  const response = await executeLLMRequest({
-    reasoningConfig: input.reasoningConfig,
-    model: input.model,
-    stage: 'S6',
+  const response = await executeTask({
+    taskId: 'shot_breakdown',
+    stageCode: 'S6',
     entityId: `Scene #${scene.scene_number}`,
     onProgress: input.onProgress,
     prompt: userPrompt,
     systemInstruction,
     temperature: 0.2,
+    reasoningConfig: input.reasoningConfig,
+    projectPolicy: {
+      mode: input.model ? 'pin' : 'auto',
+      quality: 'high',
+      priority: 'speed',
+      pinnedModelId: input.model,
+      pinnedProviderId: input.reasoningConfig?.provider_name || input.reasoningConfig?.provider_type,
+    },
     responseSchema: {
       type: Type.OBJECT,
       properties: {

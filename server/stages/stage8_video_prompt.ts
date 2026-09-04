@@ -17,6 +17,7 @@ import {
   PROMPT_TARGET_SUPPORTED_DURATIONS,
   resolveOutputDurationStrict,
 } from '../duration_engine';
+import { executeTask } from '../llm_provider';
 import {
   Scene,
   Shot,
@@ -438,6 +439,22 @@ export async function runStage8VideoPrompt(
     targets,
     videoModels,
     includeSeedance,
+  });
+
+  // Execute Video Prompt Compilation via AI Task Router
+  await executeTask({
+    taskId: 'video_prompt_generation',
+    stageCode: 'S8',
+    prompt: `Generate Cinematic Video Motion Prompts for Scene #${scene.scene_number}${shot ? ` Shot #${shot.shot_number}` : ''}: ${scene.title || 'Scene'}. Targets: ${targetsToGenerate.join(', ')}. Action: ${shot?.event_detail || scene.event || 'Action'}`,
+    systemInstruction: `You are a cinematic AI video prompt engineer. Adapt temporal motion, camera verbs, and pacing for video generation models (Veo, Omni, Seedance).`,
+    reasoningConfig: input.reasoningConfig,
+    projectPolicy: {
+      mode: input.reasoningConfig?.execution_policy?.mode || (input.model ? 'pin' : 'auto'),
+      quality: input.reasoningConfig?.execution_policy?.quality || 'high',
+      priority: input.reasoningConfig?.execution_policy?.priority || 'quality',
+      pinnedModelId: input.reasoningConfig?.execution_policy?.pinnedModelId || input.model,
+      pinnedProviderId: input.reasoningConfig?.execution_policy?.pinnedProviderId || input.reasoningConfig?.provider_name || input.reasoningConfig?.provider_type,
+    },
   });
 
   const results: Omit<VideoPrompt, 'id' | 'created_at' | 'updated_at'>[] = [];

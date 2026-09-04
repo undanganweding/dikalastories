@@ -604,7 +604,7 @@ export class CredentialManager {
       if (provider === 'google') {
         const ai = getGeminiAI(apiKey);
         const res = await ai.models.generateContent({
-          model: 'gemini-3.6-flash',
+          model: 'gemini-3.8-flash',
           contents: 'Ping test. Output {"status":"ok"} in valid JSON.',
           config: {
             temperature: 0.1,

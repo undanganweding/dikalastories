@@ -82,6 +82,9 @@ export const supabaseDb = {
 
       return {
         ...p,
+        // Virtual/derived ai_model for UI and backward compatibility (Single Source of Truth is reasoning_config)
+        ai_model: p.reasoning_config?.model_id || (p.reasoning_config?.execution_policy?.mode === 'auto' ? 'auto' : 'gemini-3.7-flash'),
+
         research_package: res.research_package || (p as any).research_package,
         research_dossier: res.research_dossier || (p as any).research_dossier,
         source_registry: res.source_registry || (p as any).source_registry,
@@ -124,6 +127,9 @@ export const supabaseDb = {
 
     return attachEphemeralApiKey({
       ...p,
+      // Virtual/derived ai_model for UI and backward compatibility (Single Source of Truth is reasoning_config)
+      ai_model: p.reasoning_config?.model_id || (p.reasoning_config?.execution_policy?.mode === 'auto' ? 'auto' : 'gemini-3.7-flash'),
+
       research_package: res.research_package,
       research_dossier: res.research_dossier,
       source_registry: res.source_registry,
@@ -184,47 +190,132 @@ export const supabaseDb = {
     const supabase = getSupabaseClient();
     const now = new Date().toISOString();
 
-    const {
-      research_package, research_dossier, source_registry, context_package,
-      narrative_blueprint, full_story, narrative_style_config,
-      generation_plan, quota_profiles, ai_call_budget, production_readiness, finalization_report, asset_integrity_reports,
-      asset_graph, validation_result, consistency_reports,
-      ...coreProject
-    } = project as any;
+    // 1. Resolve Single Source of Truth for model routing
+    // reasoning_config is the authoritative store. If legacy ai_model is passed without reasoning_config,
+    // synthesize an authoritative reasoning_config so Task Router always has complete policy.
+    let effectiveReasoningConfig = project.reasoning_config;
+    if (!effectiveReasoningConfig && (project as any).ai_model) {
+      const legacyModel = (project as any).ai_model;
+      const isAuto = !legacyModel || legacyModel === 'auto';
+      effectiveReasoningConfig = {
+        provider_type: 'google',
+        provider_name: isAuto ? 'AI Director (Auto Routing)' : 'Google Gemini',
+        model_id: isAuto ? 'auto' : legacyModel,
+        display_name: isAuto ? 'AI Director (Task Router S1-S8)' : legacyModel,
+        execution_policy: {
+          mode: isAuto ? 'auto' : 'pin',
+          ...(isAuto ? {} : { pinnedModelId: legacyModel, pinnedProviderId: 'google' }),
+        },
+      };
+    }
 
-    const coreData = sanitizeForSupabase({
-      ...coreProject,
-      updated_at: now,
+    const pAny = project as any;
+    // 2. Strict whitelist projection for public.projects table in Supabase.
+    // Note: ai_model is NOT a column in public.projects; reasoning_config is the sole authoritative store.
+    const projectRow = {
+      id: project.id,
+      title: project.title,
+      raw_script: project.raw_script ?? '',
+      total_duration_target_sec: project.total_duration_target_sec ?? 60,
+      max_scene_shot_duration_sec: project.max_scene_shot_duration_sec ?? null,
+      scene_duration_sec: project.scene_duration_sec ?? null,
+      duration_mode: project.duration_mode ?? (project.scene_duration_sec ? 'fixed' : 'auto'),
+      fixed_scene_duration: project.fixed_scene_duration ?? project.scene_duration_sec ?? null,
+      project_duration: pAny.project_duration ?? pAny.projectDuration ?? null,
+      timeline_scene_duration: pAny.timeline_scene_duration ?? pAny.timelineSceneDuration ?? null,
+      duration_mode_override: pAny.duration_mode_override ?? null,
+      model_output_duration: pAny.model_output_duration ?? pAny.modelOutputDuration ?? null,
+      selected_extended_duration: pAny.selected_extended_duration ?? pAny.selectedExtendedDuration ?? null,
+      primary_video_model: pAny.primary_video_model ?? pAny.primaryVideoModel ?? 'veo',
+      foundation_status: project.foundation_status ?? 'not_initialized',
+      allow_final_scene_override: Boolean(project.allow_final_scene_override),
+      prompt_language: project.prompt_language ?? 'id',
+      image_model: project.image_model ?? 'nano_banana_pro',
+      video_model: project.video_model ?? ['veo'],
+      include_seedance_format: Boolean(project.include_seedance_format),
+      status: project.status ?? 'draft',
+      current_stage: project.current_stage ?? 0,
+      error_message: project.error_message ?? null,
+      duration_validation_passed: Boolean(project.duration_validation_passed),
+      retry_count: project.retry_count ?? 0,
+      active_run_id: project.active_run_id ?? null,
+      latest_run_id: project.latest_run_id ?? null,
+      reasoning_config: effectiveReasoningConfig ?? null,
+      reasoning_model_preferences: project.reasoning_model_preferences ?? null,
+      owner_id: pAny.owner_id ?? 'system',
       created_at: project.created_at || now,
-    });
+      updated_at: now,
+    };
 
-    const { error: pErr } = await supabase.from('projects').upsert(coreData);
+    const { error: pErr } = await supabase.from('projects').upsert(sanitizeForSupabase(projectRow));
     if (pErr) throw new Error(`[Supabase Error saveProject]: ${pErr.message}`);
+
+    // 3. Persist domain packages to their normalized tables (supporting both camelCase and snake_case)
+    const resPkg = pAny.research_package || pAny.researchPackage;
+    const resDos = pAny.research_dossier || pAny.researchDossier;
+    const srcReg = pAny.source_registry || pAny.sourceRegistry;
+    const ctxPkg = pAny.context_package || pAny.contextPackage;
+
+    const narBp = pAny.narrative_blueprint || pAny.narrativeBlueprint;
+    const fStory = pAny.full_story || pAny.fullStory;
+    const narSty = pAny.narrative_style_config || pAny.narrativeStyleConfig;
+
+    const genPlan = pAny.generation_plan || pAny.generationPlan;
+    const qProf = pAny.quota_profiles || pAny.quotaProfiles;
+    const aiBud = pAny.ai_call_budget || pAny.aiCallBudget;
+    const prodRead = pAny.production_readiness || pAny.productionReadiness;
+    const finRep = pAny.finalization_report || pAny.finalizationReport;
+    const astRep = pAny.asset_integrity_reports || pAny.assetIntegrityReports;
+
+    const astGrph = pAny.asset_graph || pAny.assetGraph;
+    const valRes = pAny.validation_result || pAny.validationResult;
+    const conRep = pAny.consistency_reports || pAny.consistencyReports;
 
     await Promise.all([
       supabase.from('project_research_packages').upsert(sanitizeForSupabase({
         project_id: project.id,
-        research_package, research_dossier, source_registry, context_package,
+        research_package: resPkg,
+        research_dossier: resDos,
+        source_registry: srcReg,
+        context_package: ctxPkg,
         updated_at: now,
       })),
       supabase.from('project_narrative_blueprints').upsert(sanitizeForSupabase({
         project_id: project.id,
-        narrative_blueprint, full_story, narrative_style_config,
+        narrative_blueprint: narBp,
+        full_story: fStory,
+        narrative_style_config: narSty,
         updated_at: now,
       })),
       supabase.from('project_production_plans').upsert(sanitizeForSupabase({
         project_id: project.id,
-        generation_plan, quota_profiles, ai_call_budget, production_readiness, finalization_report, asset_integrity_reports,
+        generation_plan: genPlan,
+        quota_profiles: qProf,
+        ai_call_budget: aiBud,
+        production_readiness: prodRead,
+        finalization_report: finRep,
+        asset_integrity_reports: astRep,
         updated_at: now,
       })),
       supabase.from('project_asset_graphs').upsert(sanitizeForSupabase({
         project_id: project.id,
-        asset_graph, validation_result, consistency_reports,
+        asset_graph: astGrph,
+        validation_result: valRes,
+        consistency_reports: conRep,
         updated_at: now,
       })),
     ]);
 
-    return project;
+    // 4. Return complete project object with derived ai_model for UI backwards-compatibility
+    const derivedAiModel =
+      effectiveReasoningConfig?.model_id ||
+      (effectiveReasoningConfig?.execution_policy?.mode === 'auto' ? 'auto' : 'gemini-3.7-flash');
+
+    return attachEphemeralApiKey({
+      ...project,
+      ai_model: derivedAiModel,
+      reasoning_config: effectiveReasoningConfig,
+    })!;
   },
 
   async updateProject(projectId: string, updater: (project: Project) => Project): Promise<Project | null> {
@@ -282,9 +373,10 @@ export const supabaseDb = {
   async saveProjectFoundation(foundation: ProjectFoundation): Promise<ProjectFoundation> {
     const supabase = getSupabaseClient();
     const now = new Date().toISOString();
+    const { id, ...foundationData } = foundation as any;
     const cleanData = sanitizeForSupabase({
-      ...foundation,
-      project_id: foundation.project_id || foundation.id,
+      ...foundationData,
+      project_id: foundation.project_id || id,
       updated_at: now,
     });
 
@@ -897,18 +989,11 @@ export const supabaseDb = {
     const supabase = getSupabaseClient();
     const { data, error } = await supabase.from('ai_providers').select('*');
     if (error) throw new Error(`[Supabase Error getProviders]: ${error.message}`);
-    return (data || []).map((row: any) => ({
-      ...row,
-      baseUrl: row.base_url,
-      protocol: row.protocol,
-      description: row.description,
-      metadata: row.metadata || {},
-      healthStatus: row.health_status || 'unknown',
-      healthLatency: row.health_latency,
-      healthLastCheckedAt: row.health_last_checked_at,
-      healthError: row.health_error,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
+    return (data || []).map(r => ({
+      ...r,
+      baseUrl: r.base_url,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
     })) as AIProvider[];
   },
 
@@ -916,16 +1001,34 @@ export const supabaseDb = {
     const supabase = getSupabaseClient();
     const { data, error } = await supabase.from('ai_providers').select('*').eq('id', id).maybeSingle();
     if (error || !data) return null;
-    return { ...data, baseUrl: data.base_url, protocol: data.protocol, description: data.description, metadata: data.metadata || {}, healthStatus: data.health_status || 'unknown', healthLatency: data.health_latency, healthLastCheckedAt: data.health_last_checked_at, healthError: data.health_error, createdAt: data.created_at, updatedAt: data.updated_at } as AIProvider;
+    return {
+      ...data,
+      baseUrl: data.base_url,
+      createdAt: data.created_at,
+      updatedAt: data.updated_at,
+    } as AIProvider;
   },
 
   async saveProvider(provider: AIProvider): Promise<AIProvider> {
     const supabase = getSupabaseClient();
-    const { baseUrl, protocol, description, metadata, healthStatus, healthLatency, healthLastCheckedAt, healthError, createdAt, updatedAt, ...rest } = provider;
-    const cleanData = sanitizeForSupabase({ ...rest, base_url: baseUrl, protocol, description, metadata: metadata || {}, health_status: healthStatus || 'unknown', health_latency: healthLatency, health_last_checked_at: healthLastCheckedAt, health_error: healthError, created_at: createdAt, updated_at: updatedAt });
+    const now = Date.now();
+    const cleanData = sanitizeForSupabase({
+      id: provider.id,
+      name: provider.name,
+      type: provider.type,
+      base_url: provider.baseUrl,
+      enabled: provider.enabled !== undefined ? provider.enabled : true,
+      capabilities: provider.capabilities,
+      created_at: provider.createdAt || now,
+      updated_at: provider.updatedAt || now,
+    });
     const { error } = await supabase.from('ai_providers').upsert(cleanData);
     if (error) throw new Error(`[Supabase Error saveProvider]: ${error.message}`);
-    return provider;
+    return {
+      ...provider,
+      createdAt: cleanData.created_at,
+      updatedAt: cleanData.updated_at,
+    };
   },
 
   async deleteProvider(id: string): Promise<boolean> {
@@ -946,18 +1049,6 @@ export const supabaseDb = {
       encryptedSecret: r.encrypted_secret,
       googleMetadata: r.google_metadata,
       lastUsedAt: r.last_used_at,
-      quota: (r.quota_total || r.quota_used || r.quota_remaining || r.quota_reset_at) ? {
-        total: r.quota_total || 0,
-        used: r.quota_used || 0,
-        remaining: r.quota_remaining || 0,
-        resetAt: r.quota_reset_at || undefined,
-      } : undefined,
-      usage: {
-        totalRequests: r.usage_total_requests || 0,
-        totalTokens: Number(r.usage_total_tokens || 0),
-        successRate: Number(r.usage_success_rate || 100),
-        avgLatencyMs: Number(r.usage_avg_latency_ms || 0),
-      },
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     })) as AICredential[];
@@ -974,18 +1065,6 @@ export const supabaseDb = {
       encryptedSecret: data.encrypted_secret,
       googleMetadata: data.google_metadata,
       lastUsedAt: data.last_used_at,
-      quota: (data.quota_total || data.quota_used || data.quota_remaining || data.quota_reset_at) ? {
-        total: data.quota_total || 0,
-        used: data.quota_used || 0,
-        remaining: data.quota_remaining || 0,
-        resetAt: data.quota_reset_at || undefined,
-      } : undefined,
-      usage: {
-        totalRequests: data.usage_total_requests || 0,
-        totalTokens: Number(data.usage_total_tokens || 0),
-        successRate: Number(data.usage_success_rate || 100),
-        avgLatencyMs: Number(data.usage_avg_latency_ms || 0),
-      },
       createdAt: data.created_at,
       updatedAt: data.updated_at,
     } as AICredential;
@@ -993,6 +1072,7 @@ export const supabaseDb = {
 
   async saveCredential(cred: AICredential): Promise<AICredential> {
     const supabase = getSupabaseClient();
+    const now = Date.now();
     const cleanData = sanitizeForSupabase({
       id: cred.id,
       provider_id: cred.providerId,
@@ -1004,21 +1084,17 @@ export const supabaseDb = {
       priority: cred.priority,
       weight: cred.weight,
       last_used_at: cred.lastUsedAt,
-      quota_total: cred.quota?.total ?? 0,
-      quota_used: cred.quota?.used ?? 0,
-      quota_remaining: cred.quota?.remaining ?? 0,
-      quota_reset_at: cred.quota?.resetAt,
-      usage_total_requests: cred.usage?.totalRequests ?? 0,
-      usage_total_tokens: cred.usage?.totalTokens ?? 0,
-      usage_success_rate: cred.usage?.successRate ?? 100,
-      usage_avg_latency_ms: cred.usage?.avgLatencyMs ?? 0,
-      created_at: cred.createdAt,
-      updated_at: cred.updatedAt,
+      created_at: cred.createdAt || now,
+      updated_at: cred.updatedAt || now,
     });
 
     const { error } = await supabase.from('ai_credentials').upsert(cleanData);
     if (error) throw new Error(`[Supabase Error saveCredential]: ${error.message}`);
-    return cred;
+    return {
+      ...cred,
+      createdAt: cleanData.created_at,
+      updatedAt: cleanData.updated_at,
+    };
   },
 
   async deleteCredential(id: string): Promise<boolean> {
@@ -1038,6 +1114,7 @@ export const supabaseDb = {
       displayName: r.display_name,
       contextWindow: r.context_window,
       createdAt: r.created_at,
+      updatedAt: r.updated_at,
     })) as AIModel[];
   },
 
@@ -1055,25 +1132,32 @@ export const supabaseDb = {
       displayName: data.display_name,
       contextWindow: data.context_window,
       createdAt: data.created_at,
+      updatedAt: data.updated_at,
     } as AIModel;
   },
 
   async saveModel(model: AIModel): Promise<AIModel> {
     const supabase = getSupabaseClient();
+    const now = Date.now();
     const cleanData = sanitizeForSupabase({
       id: model.id,
       provider_id: model.providerId || 'google',
       display_name: model.displayName,
       tier: model.tier,
       capabilities: model.capabilities,
-      enabled: model.enabled,
+      enabled: model.enabled !== undefined ? model.enabled : true,
       context_window: model.contextWindow,
-      created_at: model.createdAt,
+      created_at: model.createdAt || now,
+      updated_at: model.updatedAt || now,
     });
 
     const { error } = await supabase.from('ai_models').upsert(cleanData);
     if (error) throw new Error(`[Supabase Error saveModel]: ${error.message}`);
-    return model;
+    return {
+      ...model,
+      createdAt: cleanData.created_at,
+      updatedAt: cleanData.updated_at,
+    };
   },
 
   async deleteModel(id: string, providerId?: string): Promise<boolean> {
@@ -1111,24 +1195,35 @@ export const supabaseDb = {
 
   async saveUsage(usage: AIUsage): Promise<AIUsage> {
     const supabase = getSupabaseClient();
+    const promptTokens = usage.promptTokens ?? usage.inputTokens ?? 0;
+    const completionTokens = usage.completionTokens ?? usage.outputTokens ?? 0;
+    const totalTokens = usage.totalTokens ?? (promptTokens + completionTokens);
+    const now = Date.now();
+
     const cleanData = sanitizeForSupabase({
       id: usage.id,
       credential_id: usage.credentialId,
-      model_id: usage.modelId,
+      model_id: usage.modelId || usage.model || 'unknown',
       request_type: usage.requestType,
       stage: usage.stage,
-      prompt_tokens: usage.promptTokens,
-      completion_tokens: usage.completionTokens,
-      total_tokens: usage.totalTokens,
-      latency_ms: usage.latencyMs,
-      success: usage.success,
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: totalTokens,
+      latency_ms: usage.latencyMs || 0,
+      success: usage.success !== undefined ? usage.success : true,
       error_type: usage.errorType,
-      timestamp: usage.timestamp,
+      timestamp: usage.timestamp || now,
     });
 
     const { error } = await supabase.from('ai_usage').upsert(cleanData);
     if (error) throw new Error(`[Supabase Error saveUsage]: ${error.message}`);
-    return usage;
+    return {
+      ...usage,
+      promptTokens,
+      completionTokens,
+      totalTokens,
+      timestamp: cleanData.timestamp,
+    };
   },
 
   async clearUsages(): Promise<boolean> {
@@ -1155,19 +1250,30 @@ export const supabaseDb = {
 
   async saveHealth(health: AIHealth): Promise<AIHealth> {
     const supabase = getSupabaseClient();
+    const now = Date.now();
     const cleanData = sanitizeForSupabase({
       credential_id: health.credentialId,
       status: health.status,
       consecutive_failures: health.consecutiveFailures,
       success_rate: health.successRate,
-      cooldown_until: health.cooldownUntil,
-      last_error: health.lastError,
-      updated_at: health.updatedAt,
+      cooldown_until: health.cooldownUntil !== undefined ? health.cooldownUntil : null,
+      last_error: health.lastError !== undefined ? health.lastError : null,
+      updated_at: health.updatedAt || now,
     });
 
     const { error } = await supabase.from('ai_health').upsert(cleanData);
     if (error) throw new Error(`[Supabase Error saveHealth]: ${error.message}`);
-    return health;
+    return {
+      ...health,
+      updatedAt: cleanData.updated_at,
+    };
+  },
+
+  async deleteHealth(credentialId: string): Promise<boolean> {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from('ai_health').delete().eq('credential_id', credentialId);
+    if (error) throw new Error(`[Supabase Error deleteHealth]: ${error.message}`);
+    return true;
   },
 
   async getRoutingPolicies(): Promise<AIRoutingPolicy[]> {
@@ -1182,23 +1288,61 @@ export const supabaseDb = {
       strategy: r.strategy,
       enabled: r.enabled,
       createdAt: r.created_at,
+      updatedAt: r.updated_at,
     })) as AIRoutingPolicy[];
+  },
+
+  async getRoutingPolicy(id: string): Promise<AIRoutingPolicy | null> {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase.from('ai_routing_policies').select('*').eq('id', id).maybeSingle();
+    if (error || !data) return null;
+    return {
+      id: data.id,
+      taskType: data.task_type,
+      preferredModelIds: data.preferred_model_ids,
+      fallbackModelIds: data.fallback_model_ids,
+      strategy: data.strategy,
+      enabled: data.enabled,
+      createdAt: data.created_at,
+      updatedAt: data.updated_at,
+    } as AIRoutingPolicy;
   },
 
   async saveRoutingPolicy(policy: AIRoutingPolicy): Promise<AIRoutingPolicy> {
     const supabase = getSupabaseClient();
+    const now = Date.now();
     const cleanData = sanitizeForSupabase({
       id: policy.id,
       task_type: policy.taskType,
       preferred_model_ids: policy.preferredModelIds,
       fallback_model_ids: policy.fallbackModelIds,
       strategy: policy.strategy,
-      enabled: policy.enabled,
-      created_at: policy.createdAt,
+      enabled: policy.enabled !== undefined ? policy.enabled : true,
+      created_at: policy.createdAt || now,
+      updated_at: policy.updatedAt || now,
     });
 
     const { error } = await supabase.from('ai_routing_policies').upsert(cleanData);
-    if (error) throw new Error(`[Supabase Error saveRoutingPolicy]: ${error.message}`);
-    return policy;
+    if (error) {
+      if (error.message && error.message.includes("Could not find the 'updated_at' column")) {
+        delete cleanData.updated_at;
+        const retry = await supabase.from('ai_routing_policies').upsert(cleanData);
+        if (retry.error) throw new Error(`[Supabase Error saveRoutingPolicy]: ${retry.error.message}`);
+      } else {
+        throw new Error(`[Supabase Error saveRoutingPolicy]: ${error.message}`);
+      }
+    }
+    return {
+      ...policy,
+      createdAt: cleanData.created_at,
+      updatedAt: cleanData.updated_at || policy.updatedAt || now,
+    };
+  },
+
+  async deleteRoutingPolicy(id: string): Promise<boolean> {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from('ai_routing_policies').delete().eq('id', id);
+    if (error) throw new Error(`[Supabase Error deleteRoutingPolicy]: ${error.message}`);
+    return true;
   },
 };

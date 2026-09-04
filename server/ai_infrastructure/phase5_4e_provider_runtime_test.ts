@@ -68,14 +68,10 @@ async function run(): Promise<void> {
   const credB = credBRes.body;
   console.log('D. Two credentials created under', geminiProvider.id, ':', credA.id, credB.id);
 
-  // Set usage stats to make Credential A higher accuracy (95%) but slower (800ms)
-  await credentialService.updateCredential(credA.id, {
-    usage: { totalRequests: 100, totalTokens: 5000, successRate: 95, avgLatencyMs: 800 },
-  });
-  // Credential B lower accuracy (80%) but faster (300ms)
-  await credentialService.updateCredential(credB.id, {
-    usage: { totalRequests: 100, totalTokens: 5000, successRate: 80, avgLatencyMs: 300 },
-  });
+  // Router scores strictly by priority (lower number = higher priority).
+  // Give Credential B higher priority so it is selected deterministically.
+  await credentialService.updateCredential(credA.id, { priority: 2 });
+  await credentialService.updateCredential(credB.id, { priority: 1 });
 
   // E. Router selects best credential (provider + credential pair) using accuracy + latency scoring
   const scored = await quotaRouter.scoreCredentials(geminiProvider.id);

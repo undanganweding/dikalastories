@@ -29,9 +29,8 @@ export const credentialService = {
     return inMemoryCredentials.filter(c => c.status === 'active');
   },
 
-  async addCredential(data: Partial<Pick<AICredential, 'encryptedSecret'>> & Omit<AICredential, 'id' | 'createdAt' | 'updatedAt' | 'maskedKey' | 'encryptedSecret'> & { secret?: string; quota?: AICredential['quota']; usage?: AICredential['usage'] }): Promise<AICredential> {
-    // Providers are created by the connection flow; credentials only require a provider ID.
-    // Keep legacy direct callers working for the built-in Google provider.
+  async addCredential(data: Partial<Pick<AICredential, 'encryptedSecret'>> & Omit<AICredential, 'id' | 'createdAt' | 'updatedAt' | 'maskedKey' | 'encryptedSecret'> & { secret?: string }): Promise<AICredential> {
+    // Check referential integrity: provider must exist
     let provider = null;
     try {
       provider = await db.getProvider(data.providerId);
@@ -67,8 +66,6 @@ export const credentialService = {
 
     const newCred: AICredential = {
       ...data,
-      quota: data.quota,
-      usage: data.usage,
       encryptedSecret: finalEncryptedSecret || '',
       maskedKey,
       id,
@@ -152,35 +149,6 @@ export const credentialService = {
 
   maskCredential(secret: string): string {
     return secretVault.maskSecret(secret);
-  },
-
-  /**
-   * Update rolling usage statistics on a credential after a request.
-   * Called by the gateway after each execution attempt.
-   */
-  async recordCredentialUsage(credentialId: string, data: { success: boolean; totalTokens?: number; latencyMs?: number }): Promise<void> {
-    let cred: AICredential | null = null;
-    try {
-      cred = await db.getCredential(credentialId);
-    } catch {}
-    if (!cred) return;
-
-    const prev = cred.usage || { totalRequests: 0, totalTokens: 0, successRate: 100, avgLatencyMs: 0 };
-    const totalRequests = prev.totalRequests + 1;
-    const totalTokens = prev.totalTokens + (data.totalTokens || 0);
-    const successCount = Math.round((prev.successRate / 100) * prev.totalRequests) + (data.success ? 1 : 0);
-    const successRate = totalRequests > 0 ? Math.round((successCount / totalRequests) * 100) : 100;
-    const avgLatencyMs = Math.round(((prev.avgLatencyMs * prev.totalRequests) + (data.latencyMs || 0)) / totalRequests);
-
-    const updated: AICredential = {
-      ...cred,
-      usage: { totalRequests, totalTokens, successRate, avgLatencyMs },
-      lastUsedAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-    try {
-      await db.saveCredential(updated);
-    } catch {}
   },
 };
 

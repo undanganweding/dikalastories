@@ -57,11 +57,19 @@ const PRESET_DURATIONS = [
 
 const PRESET_MODELS: GeminiModelOption[] = [
   {
+    id: 'gemini-3.8-flash',
+    name: 'Gemini 3.8 Flash',
+    badge: 'Direkomendasikan',
+    description: 'Generasi terbaru dengan kecepatan tinggi, batas kuota optimal & penalaran naskah sinematik.',
+    isRecommended: true,
+    tier: 'flash',
+  },
+  {
     id: 'gemini-3.7-flash',
     name: 'Gemini 3.7 Flash',
-    badge: 'Direkomendasikan',
+    badge: 'Adaptif',
     description: 'Generasi terbaru dengan penalaran adaptif sinematik & latensi sangat responsif.',
-    isRecommended: true,
+    isRecommended: false,
     tier: 'flash',
   },
   {
@@ -152,10 +160,14 @@ export const NewProjectForm: React.FC<NewProjectFormProps> = ({ onSubmit, isLoad
   const [fixedSceneDuration, setFixedSceneDuration] = useState<number>(10);
   const [allowFinalSceneOverride, setAllowFinalSceneOverride] = useState<boolean>(false);
   const [promptLanguage, setPromptLanguage] = useState<PromptLanguage>('id');
-  const [selectedModel, setSelectedModel] = useState<string>('gemini-3.7-flash');
+  const [selectedModel, setSelectedModel] = useState<string>('gemini-3.8-flash');
   const [customModelInput, setCustomModelInput] = useState<string>('');
   const [isCustomModelActive, setIsCustomModelActive] = useState<boolean>(false);
-  // Reasoning Model Provider State
+  // AI Director Mode & Quality Policy
+  const [directorMode, setDirectorMode] = useState<'auto' | 'manual'>('auto');
+  const [qualityPriority, setQualityPriority] = useState<'quality' | 'speed'>('quality');
+  const [showManualOverride, setShowManualOverride] = useState<boolean>(false);
+  // Reasoning Model Provider State (Manual Pin)
   const [providerType, setProviderType] = useState<ReasoningProviderType>('google');
   const [externalBaseUrl, setExternalBaseUrl] = useState<string>('');
   const [externalModelId, setExternalModelId] = useState<string>('');
@@ -358,12 +370,30 @@ export const NewProjectForm: React.FC<NewProjectFormProps> = ({ onSubmit, isLoad
     }
 
     let reasoning_config: ReasoningConfig;
-    if (providerType === 'google') {
+    if (directorMode === 'auto') {
+      reasoning_config = {
+        provider_type: 'google',
+        provider_name: 'AI Director (Auto Routing)',
+        model_id: 'auto',
+        display_name: `AI Director (${qualityPriority === 'quality' ? 'High Quality' : 'High Speed'})`,
+        execution_policy: {
+          mode: 'auto',
+          quality: qualityPriority === 'quality' ? 'high' : 'standard',
+          priority: qualityPriority,
+        },
+      };
+    } else if (providerType === 'google') {
       reasoning_config = {
         provider_type: 'google',
         provider_name: 'Google Gemini',
         model_id: effectiveModel,
         display_name: effectiveModel,
+        execution_policy: {
+          mode: 'pin',
+          pinnedModelId: effectiveModel,
+          pinnedProviderId: 'google',
+          priority: qualityPriority,
+        },
       };
     } else {
       reasoning_config = {
@@ -373,6 +403,12 @@ export const NewProjectForm: React.FC<NewProjectFormProps> = ({ onSubmit, isLoad
         model_id: externalModelId.trim(),
         api_key: externalApiKey.trim() || undefined,
         display_name: externalDisplayName.trim() || externalModelId.trim(),
+        execution_policy: {
+          mode: 'pin',
+          pinnedModelId: externalModelId.trim(),
+          pinnedProviderId: providerType,
+          priority: qualityPriority,
+        },
       };
     }
 
@@ -384,7 +420,7 @@ export const NewProjectForm: React.FC<NewProjectFormProps> = ({ onSubmit, isLoad
       scene_duration_sec: isAutoSceneDuration ? null : fixedSceneDuration,
       allow_final_scene_override: allowFinalSceneOverride,
       prompt_language: promptLanguage,
-      ai_model: reasoning_config.model_id,
+      ai_model: directorMode === 'auto' ? 'auto' : reasoning_config.model_id,
       reasoning_config,
       image_model: 'nano_banana_pro' as const,
       video_model: selectedVideoModels,
@@ -871,51 +907,153 @@ export const NewProjectForm: React.FC<NewProjectFormProps> = ({ onSubmit, isLoad
           </div>
         </div>
 
-        {/* INPUT 6: Multi-LLM Reasoning Model Provider Selection */}
+        {/* INPUT 6: AI Execution Authority (AI Task Router) */}
         <div className="bg-zinc-900/70 border border-zinc-800/90 rounded-2xl p-5 sm:p-6 backdrop-blur shadow-sm space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-zinc-800/80 pb-3">
             <div>
               <label className="text-sm font-bold text-zinc-200 flex items-center gap-2">
                 <Cpu className="w-4 h-4 text-amber-400" />
-                6. Model Penalaran Naskah (Penyedia Multi-LLM)
+                6. Sistem Eksekusi AI (Autonomous Task Router)
               </label>
               <p className="text-xs text-zinc-400 mt-0.5">
-                Pilih penyedia dan model AI untuk mengeksekusi analisis naskah, rincian adegan/shot, dan perumusan prompt sinematik.
+                SINEMA otomatis memilih model terbaik untuk setiap tahap produksi berdasarkan kemampuan model, kualitas, konteks, kesehatan provider, dan ketersediaan credential.
               </p>
             </div>
             <span className="self-start sm:self-auto text-[11px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-lg flex items-center gap-1.5 shrink-0">
-              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-              {getProviderName(providerType)}: {providerType === 'google' ? effectiveModel : (externalDisplayName || externalModelId || 'Pilih Model')}
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              {directorMode === 'auto' ? 'AI Director [● Auto Routing]' : 'Model Pinned (Override)'}
             </span>
           </div>
 
-          {/* Provider Selection Tabs */}
-          <div className="flex items-center gap-1.5 p-1 bg-zinc-950/80 rounded-xl border border-zinc-800 overflow-x-auto">
-            <button
-              type="button"
-              onClick={() => handleProviderChange('google')}
-              className={`flex-1 min-w-[120px] py-2 px-3 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                providerType === 'google'
-                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
-                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'
-              }`}
-            >
-              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-              <span>Google Gemini</span>
-            </button>
+          {/* Primary Configuration: AI Director [● Auto Routing] */}
+          <div className="p-4 rounded-xl bg-zinc-950/80 border border-zinc-800 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-amber-500/20 border border-amber-500 flex items-center justify-center">
+                  <div className="w-2 h-2 rounded-full bg-amber-400" />
+                </div>
+                <span className="text-xs font-bold text-zinc-100">AI Director [● Auto Routing]</span>
+              </div>
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+                Default & Direkomendasikan
+              </span>
+            </div>
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              SINEMA otomatis memilih model terbaik untuk setiap tahap produksi berdasarkan kemampuan model, kualitas, konteks, kesehatan provider, dan ketersediaan credential.
+            </p>
 
+            {/* Policy Preference */}
+            <div className="pt-2 border-t border-zinc-800/80 space-y-2">
+              <span className="text-[11px] font-semibold text-zinc-300 block">Prioritas Eksekusi:</span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-md">
+                <button
+                  type="button"
+                  onClick={() => setQualityPriority('quality')}
+                  className={`py-2 px-3 rounded-lg text-xs font-semibold border flex items-center justify-between transition cursor-pointer ${
+                    qualityPriority === 'quality'
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                      : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                  }`}
+                >
+                  <div className="text-left">
+                    <span className="block font-bold">Kualitas Utama</span>
+                    <span className="text-[10px] text-zinc-400">Presisi sinematik & penalaran tinggi</span>
+                  </div>
+                  {qualityPriority === 'quality' && <Check className="w-3.5 h-3.5 text-amber-400" />}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setQualityPriority('speed')}
+                  className={`py-2 px-3 rounded-lg text-xs font-semibold border flex items-center justify-between transition cursor-pointer ${
+                    qualityPriority === 'speed'
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                      : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                  }`}
+                >
+                  <div className="text-left">
+                    <span className="block font-bold">Kecepatan Utama</span>
+                    <span className="text-[10px] text-zinc-400">Latensi cepat & alokasi seimbang</span>
+                  </div>
+                  {qualityPriority === 'speed' && <Check className="w-3.5 h-3.5 text-amber-400" />}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Advanced Accordion Toggle for Manual Model Pinning */}
+          <div className="pt-1">
             <button
               type="button"
-              onClick={() => handleProviderChange('openrouter')}
-              className={`flex-1 min-w-[110px] py-2 px-3 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                providerType === 'openrouter'
-                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
-                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'
-              }`}
+              onClick={() => {
+                const nextState = !showManualOverride;
+                setShowManualOverride(nextState);
+                if (!nextState) {
+                  setDirectorMode('auto');
+                } else {
+                  setDirectorMode('manual');
+                }
+              }}
+              className="text-xs font-semibold text-zinc-400 hover:text-amber-300 flex items-center gap-1.5 transition cursor-pointer"
             >
-              <Globe className="w-3.5 h-3.5 text-sky-400" />
-              <span>OpenRouter</span>
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showManualOverride ? 'rotate-180' : ''}`} />
+              <span>⚙ Opsi Lanjutan: Override / Pinning Model Tertentu (Opsional)</span>
             </button>
+          </div>
+
+          {showManualOverride && (
+            <div className="space-y-4 pt-3 border-t border-zinc-800">
+              <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-bold">Mode Override / Pinned Model (Lanjutan)</p>
+                  <p className="text-amber-300/80 mt-0.5">
+                    Memaksa seluruh tahap produksi menggunakan model spesifik yang Anda pilih di bawah ini, melewatkan Auto Routing pintar.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-zinc-300">Pilih Penyedia & Model untuk Pinning Manual:</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDirectorMode('auto');
+                    setShowManualOverride(false);
+                  }}
+                  className="text-[11px] text-amber-400 hover:underline cursor-pointer"
+                >
+                  Kembali ke Auto Routing
+                </button>
+              </div>
+
+              {/* Provider Selection Tabs */}
+              <div className="flex items-center gap-1.5 p-1 bg-zinc-950/80 rounded-xl border border-zinc-800 overflow-x-auto">
+                <button
+                  type="button"
+                  onClick={() => handleProviderChange('google')}
+                  className={`flex-1 min-w-[120px] py-2 px-3 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                    providerType === 'google'
+                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Google Gemini</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleProviderChange('openrouter')}
+                  className={`flex-1 min-w-[110px] py-2 px-3 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                    providerType === 'openrouter'
+                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'
+                  }`}
+                >
+                  <Globe className="w-3.5 h-3.5 text-sky-400" />
+                  <span>OpenRouter</span>
+                </button>
 
             <button
               type="button"
@@ -1247,8 +1385,10 @@ export const NewProjectForm: React.FC<NewProjectFormProps> = ({ onSubmit, isLoad
             )}
           </div>
         </div>
+      )}
+    </div>
 
-        {/* Action Button */}
+    {/* Action Button */}
         <div className="pt-2 pb-8">
           <button
             id="btn-generate-project"

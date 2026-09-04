@@ -66,6 +66,26 @@ export const modelsRegistry: Record<string, ModelDefinition> = {
       },
     },
   },
+  'gemini-3.8-flash': {
+    id: 'gemini-3.8-flash',
+    requiredCapability: 'text',
+    providers: {
+      'google': {
+        supported: true,
+        nativeModelName: 'gemini-3.8-flash',
+      },
+    },
+  },
+  'gemini-flash-latest': {
+    id: 'gemini-flash-latest',
+    requiredCapability: 'text',
+    providers: {
+      'google': {
+        supported: true,
+        nativeModelName: 'gemini-flash-latest',
+      },
+    },
+  },
   'gemini-3.7-flash': {
     id: 'gemini-3.7-flash',
     requiredCapability: 'text',
@@ -116,16 +136,6 @@ export const modelsRegistry: Record<string, ModelDefinition> = {
       },
     },
   },
-  'gemini-3.8-flash': {
-    id: 'gemini-3.8-flash',
-    requiredCapability: 'text',
-    providers: {
-      'google': {
-        supported: true,
-        nativeModelName: 'gemini-3.8-flash',
-      },
-    },
-  },
   'gemini-3.1-flash-image': {
     id: 'gemini-3.1-flash-image',
     requiredCapability: 'image',
@@ -149,6 +159,172 @@ export const modelsRegistry: Record<string, ModelDefinition> = {
 };
 
 export const capabilityRegistry = {
+  // AMM Capability Classifier: Authoritatively classifies raw model into canonical capabilities & tier
+  classifyRawModelCapability(raw: {
+    id: string;
+    displayName?: string;
+    description?: string;
+    capabilities?: string[];
+    tier?: string;
+    contextWindow?: number;
+  }, providerType?: string): {
+    requiredCapability: AICapability;
+    supportedCapabilities: string[];
+    tier: 'flash' | 'pro' | 'lite' | 'ultra';
+    contextWindow: number;
+    displayName: string;
+  } {
+    const rawId = (raw.id || '').toLowerCase().trim();
+    const rawName = (raw.displayName || raw.id || '').toLowerCase().trim();
+    const rawDesc = (raw.description || '').toLowerCase();
+
+    // 1. Determine canonical Required Capability
+    let requiredCapability: AICapability = 'text';
+    if (rawId.includes('veo') || rawId.includes('video') || rawId.includes('sora') || rawDesc.includes('video')) {
+      requiredCapability = 'video';
+    } else if (rawId.includes('imagen') || rawId.includes('image') || rawId.includes('dall-e') || rawDesc.includes('image generation')) {
+      requiredCapability = 'image';
+    } else if (rawId.includes('vision') && !rawId.includes('gemini') && !rawId.includes('gpt')) {
+      requiredCapability = 'vision';
+    }
+
+    // 2. Determine Supported Capabilities list
+    const capsSet = new Set<string>();
+    capsSet.add('text');
+
+    if (requiredCapability === 'video') {
+      capsSet.add('video');
+      capsSet.add('cinematic_generation');
+    } else if (requiredCapability === 'image') {
+      capsSet.add('image');
+      capsSet.add('visual_generation');
+    } else {
+      // Multimodal text/vision models
+      if (
+        rawId.includes('gemini') ||
+        rawId.includes('4o') ||
+        rawId.includes('sonnet') ||
+        rawId.includes('vision') ||
+        rawId.includes('multimodal')
+      ) {
+        capsSet.add('vision');
+        capsSet.add('multimodal');
+      }
+
+      // Reasoning / Deep analysis
+      if (
+        rawId.includes('pro') ||
+        rawId.includes('r1') ||
+        rawId.includes('o1') ||
+        rawId.includes('o3') ||
+        rawId.includes('reasoning') ||
+        rawDesc.includes('reasoning')
+      ) {
+        capsSet.add('reasoning');
+        capsSet.add('structured_output');
+        capsSet.add('code');
+      }
+
+      // Fast / High throughput
+      if (
+        rawId.includes('flash') ||
+        rawId.includes('mini') ||
+        rawId.includes('haiku') ||
+        rawId.includes('lite') ||
+        rawId.includes('turbo')
+      ) {
+        capsSet.add('fast');
+        capsSet.add('structured_output');
+      }
+
+      // Creative generation
+      capsSet.add('creative');
+    }
+
+    // Incorporate any explicit user-specified or upstream detected capabilities
+    if (Array.isArray(raw.capabilities)) {
+      for (const c of raw.capabilities) {
+        if (typeof c === 'string' && c.trim()) capsSet.add(c.trim().toLowerCase());
+      }
+    }
+
+    // 3. Determine Canonical Tier
+    let tier: 'flash' | 'pro' | 'lite' | 'ultra' = 'flash';
+    if (rawId.includes('ultra') || rawId.includes('opus') || rawId.includes('o1-high')) {
+      tier = 'ultra';
+    } else if (
+      rawId.includes('pro') ||
+      rawId.includes('sonnet') ||
+      rawId.includes('4o') ||
+      rawId.includes('r1') ||
+      rawId.includes('deepseek-r1')
+    ) {
+      tier = 'pro';
+    } else if (
+      rawId.includes('lite') ||
+      rawId.includes('mini') ||
+      rawId.includes('haiku') ||
+      rawId.includes('small') ||
+      rawId.includes('nano')
+    ) {
+      tier = 'lite';
+    } else {
+      tier = 'flash';
+    }
+
+    // 4. Calculate default Context Window
+    let contextWindow = raw.contextWindow;
+    if (!contextWindow || contextWindow <= 0) {
+      if (rawId.includes('gemini-2.5-pro') || rawId.includes('gemini-1.5-pro')) {
+        contextWindow = 2097152;
+      } else if (rawId.includes('gemini')) {
+        contextWindow = 1048576;
+      } else if (rawId.includes('claude') || rawId.includes('sonnet')) {
+        contextWindow = 200000;
+      } else if (rawId.includes('gpt-4') || rawId.includes('deepseek')) {
+        contextWindow = 128000;
+      } else {
+        contextWindow = 128000;
+      }
+    }
+
+    const displayName = raw.displayName && raw.displayName.trim()
+      ? raw.displayName.trim()
+      : raw.id;
+
+    return {
+      requiredCapability,
+      supportedCapabilities: Array.from(capsSet),
+      tier,
+      contextWindow,
+      displayName,
+    };
+  },
+
+  // Authoritatively register/sync a model with AMM Authority
+  registerAMMModel(modelId: string, providerId: string, requiredCapability: AICapability = 'text', nativeModelName?: string): ModelDefinition {
+    let modelDef = modelsRegistry[modelId];
+    if (!modelDef) {
+      modelDef = {
+        id: modelId,
+        requiredCapability,
+        providers: {},
+      };
+      modelsRegistry[modelId] = modelDef;
+    }
+    modelDef.requiredCapability = requiredCapability;
+    if (!modelDef.providers[providerId]) {
+      modelDef.providers[providerId] = {
+        supported: true,
+        nativeModelName: nativeModelName || modelId,
+      };
+    } else {
+      modelDef.providers[providerId].supported = true;
+      if (nativeModelName) modelDef.providers[providerId].nativeModelName = nativeModelName;
+    }
+    return modelDef;
+  },
+
   // Get canonical capability required for a model
   getRequiredCapability(modelId: string): AICapability {
     const model = modelsRegistry[modelId];
@@ -173,31 +349,55 @@ export const capabilityRegistry = {
       }
     }
 
-    // 2. Check model-specific registry
+    // 2. Check model-specific registry in AMM
     const modelDef = modelsRegistry[modelId];
-    if (!modelDef) {
-      // If it's a completely unknown model, we class it as model-not-found
-      return {
-        capable: false,
-        reason: `Model '${modelId}' not found in registry`,
-      };
+    if (modelDef) {
+      const provConfig = modelDef.providers[providerId];
+      if (provConfig && provConfig.supported) {
+        return { capable: true };
+      }
+      if (provConfig && provConfig.supported === false) {
+        return {
+          capable: false,
+          reason: `Provider '${providerId}' explicitly does not support model '${modelId}'`,
+        };
+      }
+      // If ops-5, any custom provider supports it by default (native exact match)
+      if (modelId === 'ops-5' && providerId !== 'google') {
+        return { capable: true };
+      }
+      // If provider has an advertised model list, check if it's included
+      const providerModelList = provider?.supportedModels || provider?.models || provider?.models_available;
+      if (Array.isArray(providerModelList) && providerModelList.includes(modelId)) {
+        return { capable: true };
+      }
+      // If it's a known static model with specific provider whitelist
+      if (Object.keys(modelDef.providers).length > 0 && !provConfig) {
+        return {
+          capable: false,
+          reason: `Provider '${providerId}' does not support model '${modelId}'`,
+        };
+      }
+    } else {
+      // If model is completely unknown in registry, check if provider explicitly advertises it
+      const providerModelList = provider?.supportedModels || provider?.models || provider?.models_available;
+      if (Array.isArray(providerModelList) && providerModelList.length > 0) {
+        if (!providerModelList.includes(modelId)) {
+          return {
+            capable: false,
+            reason: `Model '${modelId}' is not supported by provider '${providerId}'`,
+          };
+        }
+      } else {
+        return {
+          capable: false,
+          reason: `Model '${modelId}' not found in capability registry`,
+        };
+      }
     }
 
-    // If custom provider has exact model matching
-    const provConfig = modelDef.providers[providerId];
-    if (provConfig && provConfig.supported) {
-      return { capable: true };
-    }
-
-    // For any custom provider (openai-compatible), we assume it natively supports 'ops-5' unless specifically registered otherwise
-    if (providerId !== 'google' && modelId === 'ops-5') {
-      return { capable: true };
-    }
-
-    return {
-      capable: false,
-      reason: `Provider '${providerId}' does not support model '${modelId}'`,
-    };
+    // For custom providers or dynamic models in DB, capability is granted if provider satisfies required capability
+    return { capable: true };
   },
 
   // Resolve native model name for a provider

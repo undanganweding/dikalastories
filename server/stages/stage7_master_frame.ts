@@ -6,6 +6,7 @@ import {
   assertProductionPromptContract,
 } from '../cinematic_prompt_engine';
 import { resolveOutputDurationStrict } from '../duration_engine';
+import { executeTask } from '../llm_provider';
 import {
   Scene,
   ProjectFoundation,
@@ -92,6 +93,22 @@ export async function runStage7MasterFrameAndImagePrompt(
     contextPackage,
     continuityState
   );
+
+  // Execute Master Frame Compilation via AI Task Router
+  await executeTask({
+    taskId: 'master_frame_generation',
+    stageCode: 'S7',
+    prompt: `Compile Master Frame Visual Prompt for Scene #${scene.scene_number}: ${scene.title || 'Scene'}. Era: ${foundation?.era || 'Historic'}. Location: ${scene.location_name || 'Set'}. Characters: ${scene.character_names?.join(', ') || 'N/A'}. Event: ${scene.event || 'Action'}`,
+    systemInstruction: `You are an expert cinematic visual prompter and cinematographer. Format Master Frame and visual stylization parameters for diffusion models.`,
+    reasoningConfig: input.reasoningConfig,
+    projectPolicy: {
+      mode: input.reasoningConfig?.execution_policy?.mode || (input.model ? 'pin' : 'auto'),
+      quality: input.reasoningConfig?.execution_policy?.quality || 'high',
+      priority: input.reasoningConfig?.execution_policy?.priority || 'quality',
+      pinnedModelId: input.reasoningConfig?.execution_policy?.pinnedModelId || input.model,
+      pinnedProviderId: input.reasoningConfig?.execution_policy?.pinnedProviderId || input.reasoningConfig?.provider_name || input.reasoningConfig?.provider_type,
+    },
+  });
 
   let masterFrameText = adaptBananaMasterFrame(masterData);
   let imagePromptText = adaptBananaImagePrompt(masterData);

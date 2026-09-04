@@ -161,6 +161,24 @@ export class InMemSupabaseMock {
                 }
               }
             }
+
+            // Handle Foreign Key CASCADE on ai_providers deletion
+            if (tableName === 'ai_providers') {
+              for (const provId of matchingIds) {
+                const creds = this.getTable('ai_credentials');
+                this.tables.set('ai_credentials', creds.filter((r) => r.provider_id !== provId));
+                const models = this.getTable('ai_models');
+                this.tables.set('ai_models', models.filter((r) => r.provider_id !== provId));
+              }
+            }
+
+            // Handle Foreign Key CASCADE on ai_credentials deletion
+            if (tableName === 'ai_credentials') {
+              for (const credId of matchingIds) {
+                const health = this.getTable('ai_health');
+                this.tables.set('ai_health', health.filter((r) => r.credential_id !== credId));
+              }
+            }
             return resolve({ data: result, error: null });
           }
 

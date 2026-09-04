@@ -18,8 +18,16 @@ export function buildFullScenePrompt(
   snapshot?: ContinuitySnapshot | null
 ): string {
   const durationSec = scene.duration_sec || 10;
-  const tone = scene.scene_tone;
-  const toneDesc = tone ? `[Tone: ${tone.atmosphere.toUpperCase()} | Intensitas: ${tone.intensity}/100 | Tempo: ${tone.pacing}]` : '';
+  const tone = scene.scene_tone as any;
+  let toneDesc = '';
+  if (typeof tone === 'string' && tone.trim()) {
+    toneDesc = `[Tone: ${tone.trim().toUpperCase()}]`;
+  } else if (tone && typeof tone === 'object') {
+    const atmo = tone.atmosphere ? String(tone.atmosphere).toUpperCase() : 'NEUTRAL';
+    const intensity = tone.intensity !== undefined ? `${tone.intensity}/100` : 'NORMAL';
+    const pacing = tone.pacing || 'NORMAL';
+    toneDesc = `[Tone: ${atmo} | Intensitas: ${intensity} | Tempo: ${pacing}]`;
+  }
 
   const activeCharNames = scene.character_names || [];
   const locationName = scene.location_name || 'Latar Historis';

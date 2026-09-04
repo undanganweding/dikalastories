@@ -33,6 +33,8 @@ export interface ModelCapabilities {
 }
 
 const MODEL_CAPABILITIES_MAP: Record<string, ModelCapabilities> = {
+  'gemini-3.8-flash': { structured_output: true, json_schema: true, long_context: true, reasoning: true },
+  'gemini-flash-latest': { structured_output: true, json_schema: true, long_context: true, reasoning: true },
   'gemini-3.7-flash': { structured_output: true, json_schema: true, long_context: true, reasoning: true },
   'gemini-3.6-flash': { structured_output: true, json_schema: true, long_context: true, reasoning: true },
   'gemini-3.1-pro-preview': { structured_output: true, json_schema: true, long_context: true, reasoning: true },
@@ -139,7 +141,7 @@ export function getDeterministicFallbacks(
 
   // Default Gemini family fallbacks if pool is empty or insufficient
   if (primary.provider === 'google' && candidates.length < maxFallbacks) {
-    const familyOrder = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.1-pro-preview', 'gemini-3.1-flash-lite', 'gemini-2.5-pro'];
+    const familyOrder = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.7-flash', 'gemini-3.1-pro-preview', 'gemini-3.1-flash-lite', 'gemini-3.6-flash', 'gemini-2.5-pro'];
     for (const famModel of familyOrder) {
       if (famModel !== primary.model_id && !candidates.some(c => c.model_id === famModel)) {
         if (satisfiesTaskTier(famModel, taskTier)) {

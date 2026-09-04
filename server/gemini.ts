@@ -36,7 +36,7 @@ export function getGeminiAI(apiKeyOverride?: string | null): GoogleGenAI {
   return aiInstance;
 }
 
-export const DEFAULT_GEMINI_MODEL = 'gemini-3.7-flash';
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 
 export interface GeminiModelInfo {
   id: string;
@@ -57,19 +57,37 @@ export interface GeminiModelInfo {
 
 export const AVAILABLE_MODELS: GeminiModelInfo[] = [
   {
+    id: 'gemini-3.8-flash',
+    name: 'Gemini 3.8 Flash',
+    badge: 'Recommended',
+    description: 'Generasi terbaru dengan kecepatan tinggi, batas kuota optimal & penalaran naskah sinematik.',
+    isRecommended: true,
+    tier: 'flash',
+    capabilities: { text: true, image: true, video: true, audio: true, reasoning: true, realtime: false },
+  },
+  {
+    id: 'gemini-flash-latest',
+    name: 'Gemini Flash Latest',
+    badge: 'Latest Flash',
+    description: 'Alias resmi model Flash mutakhir Google AI Studio.',
+    isRecommended: false,
+    tier: 'flash',
+    capabilities: { text: true, image: true, video: true, audio: true, reasoning: true, realtime: false },
+  },
+  {
     id: 'gemini-3.7-flash',
     name: 'Gemini 3.7 Flash',
-    badge: 'Recommended',
-    description: 'Generasi terbaru dengan penalaran adaptif sinematik & kecepatan sangat tinggi.',
-    isRecommended: true,
+    badge: 'Adaptive',
+    description: 'Generasi Flash dengan penalaran adaptif sinematik & kecepatan sangat tinggi.',
+    isRecommended: false,
     tier: 'flash',
     capabilities: { text: true, image: true, video: true, audio: true, reasoning: true, realtime: false },
   },
   {
     id: 'gemini-3.6-flash',
     name: 'Gemini 3.6 Flash',
-    badge: 'Stable Fast',
-    description: 'Model ultra cepat dan stabil untuk pemrosesan teks, karakter & durasi.',
+    badge: 'Legacy Fast',
+    description: 'Model pemrosesan cepat teks legacy.',
     isRecommended: false,
     tier: 'flash',
     capabilities: { text: true, image: true, video: true, audio: true, reasoning: true, realtime: false },
@@ -79,7 +97,7 @@ export const AVAILABLE_MODELS: GeminiModelInfo[] = [
     name: 'Gemini 3.5 Flash',
     badge: 'Production',
     description: 'Frontier performance dengan kecepatan Flash.',
-    isRecommended: true,
+    isRecommended: false,
     tier: 'flash',
     capabilities: { text: true, image: true, video: true, audio: true, reasoning: true, realtime: false },
   },
@@ -131,8 +149,8 @@ export function resolveGeminiModel(modelName?: string | null): string {
     trimmed = trimmed.replace('models/', '');
   }
   // Auto-upgrade legacy / discontinued models
-  if (trimmed === 'gemini-2.5-flash' || trimmed === 'gemini-2.0-flash' || trimmed === 'gemini-1.5-flash') {
-    return 'gemini-3.6-flash';
+  if (trimmed === 'gemini-2.5-flash' || trimmed === 'gemini-2.0-flash' || trimmed === 'gemini-1.5-flash' || trimmed === 'gemini-3.6-flash') {
+    return 'gemini-3.8-flash';
   }
   if (trimmed === 'gemini-2.5-pro' || trimmed === 'gemini-2.0-pro' || trimmed === 'gemini-1.5-pro') {
     return 'gemini-3.1-pro-preview';

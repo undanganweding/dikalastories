@@ -1,19 +1,45 @@
 import { ModelCapability } from './capability_registry';
 import { adaptiveOptimizer } from './adaptive_optimizer';
 import { decisionIntelligenceEngine, DecisionExplanation } from './decision_intelligence';
+import { taskRegistry } from './task_registry';
 
 export interface TaskIntentRecommendation {
   taskClass: string;
+  stageCode?: string;
   complexity: 'low' | 'medium' | 'high';
   requiredCapabilities: string[];
   preferredTier: 'flash' | 'pro' | 'ultra';
+  minContextWindow?: number;
+  outputFormat?: string;
+  qualityPriority?: string;
 }
 
 /**
  * Classifies task requirements into abstract intent metadata.
+ * Prioritizes the authoritative AI Task Registry before heuristic fallback.
  * Does NOT select or hardcode any concrete model_id.
  */
 export function classifyTaskRequirements(task?: string): TaskIntentRecommendation {
+  if (task) {
+    const registeredTask = taskRegistry.getTask(task);
+    if (registeredTask) {
+      let complexity: 'low' | 'medium' | 'high' = 'medium';
+      if (registeredTask.qualityPriority === 'critical') complexity = 'high';
+      else if (registeredTask.qualityPriority === 'fast') complexity = 'low';
+
+      return {
+        taskClass: registeredTask.id,
+        stageCode: registeredTask.stageCode,
+        complexity,
+        requiredCapabilities: [...registeredTask.requiredCapabilities],
+        preferredTier: registeredTask.preferredTier === 'ultra' ? 'ultra' : registeredTask.preferredTier === 'pro' ? 'pro' : 'flash',
+        minContextWindow: registeredTask.minContextWindow,
+        outputFormat: registeredTask.outputFormatRequirement,
+        qualityPriority: registeredTask.qualityPriority,
+      };
+    }
+  }
+
   const normalizedTask = (task || '').toLowerCase().trim();
 
   if (

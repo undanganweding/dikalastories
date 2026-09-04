@@ -22,6 +22,24 @@ export interface ARMOModelMetadata {
 
 export const ARMO_MODEL_REGISTRY: Record<string, ARMOModelMetadata> = {
   // Google Gemini Family
+  'gemini-3.8-flash': {
+    modelId: 'gemini-3.8-flash',
+    provider: 'google',
+    tier: 'fast_structured',
+    capabilities: { structured_output: true, json_schema: true, long_context: true, reasoning: true },
+    contextWindow: 1000000,
+    costWeight: 1,
+    isRecommended: true,
+  },
+  'gemini-flash-latest': {
+    modelId: 'gemini-flash-latest',
+    provider: 'google',
+    tier: 'fast_structured',
+    capabilities: { structured_output: true, json_schema: true, long_context: true, reasoning: true },
+    contextWindow: 1000000,
+    costWeight: 1,
+    isRecommended: true,
+  },
   'gemini-3.7-flash': {
     modelId: 'gemini-3.7-flash',
     provider: 'google',

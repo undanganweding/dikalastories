@@ -386,47 +386,49 @@ async function executeSingleModelRequest(
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         if (attempt === 1) {
           if (config?.model_id) {
-            currentModelId = config.model_id;
+            currentModelId = resolveGeminiModel(config.model_id);
           } else if (forcedModel) {
-            currentModelId = forcedModel;
+            currentModelId = resolveGeminiModel(forcedModel);
           } else {
             const primaryModel = taskProfile.default_model || (await modelRouter.getBestModel(taskStr as any, taskProfile.tier as any, 1)).modelId;
-            currentModelId = primaryModel;
+            currentModelId = resolveGeminiModel(primaryModel);
           }
         } else {
           // On subsequent attempts, query ModelRouter for next best available model
-          // BUT if we have an explicit model_id passed from ARMO, we must stick to it to prevent drift!
-          if (config?.model_id) {
-            currentModelId = config.model_id;
+          // If strictly forced without rate-limiting error, keep it, otherwise allow failover
+          const isRateOrQuota = lastAttemptError && isRateLimitOrQuotaError(lastAttemptError);
+          const isStrictlyForced = options.modelPreferences?.force_model === true && !isRateOrQuota;
+          
+          if (isStrictlyForced && config?.model_id) {
+            currentModelId = resolveGeminiModel(config.model_id);
           } else {
             const candidateModel = (await modelRouter.getBestModel(taskStr as any, taskProfile.tier as any, attempt)).modelId;
             if (candidateModel) {
-              if (candidateModel !== currentModelId) {
-                console.warn(`${stageTag} Model ${currentModelId} exhausted/rate-limited. Failing over to ${candidateModel} for attempt ${attempt}`);
+              const resolvedCandidate = resolveGeminiModel(candidateModel);
+              if (resolvedCandidate !== currentModelId) {
+                console.warn(`${stageTag} Model ${currentModelId} exhausted/rate-limited. Failing over to ${resolvedCandidate} for attempt ${attempt}`);
               }
-              currentModelId = candidateModel;
+              currentModelId = resolvedCandidate;
             }
           }
         }
 
-        let modelId = currentModelId;
+        let modelId = resolveGeminiModel(currentModelId);
         let activeProjects = geminiProjectRouter.getBestProjects(taskStr, modelId);
         
         if (activeProjects.length === 0) {
-            if (config?.model_id) {
-              // Bypass silent model fallback if specified by ARMO
+            const fallbackModel = (await modelRouter.getBestModel(taskStr as any, taskProfile.tier as any, attempt + 1)).modelId;
+            if (fallbackModel) {
+                const resolvedFallback = resolveGeminiModel(fallbackModel);
+                if (resolvedFallback !== modelId) {
+                    console.warn(`${stageTag} Preferred model ${modelId} unavailable. Falling back to ${resolvedFallback}`);
+                    currentModelId = resolvedFallback;
+                    modelId = resolvedFallback;
+                    activeProjects = geminiProjectRouter.getBestProjects(taskStr, modelId);
+                }
+            }
+            if (activeProjects.length === 0) {
               throw new Error(`No available Gemini projects for task ${taskStr} and model ${modelId}`);
-            } else {
-              const fallbackModel = (await modelRouter.getBestModel(taskStr as any, taskProfile.tier as any, attempt + 1)).modelId;
-              if (fallbackModel && fallbackModel !== modelId) {
-                  console.warn(`${stageTag} Preferred model ${modelId} unavailable. Falling back to ${fallbackModel}`);
-                  currentModelId = fallbackModel;
-                  modelId = fallbackModel;
-                  activeProjects = geminiProjectRouter.getBestProjects(taskStr, modelId);
-              }
-              if (activeProjects.length === 0) {
-                throw new Error(`No available Gemini projects for task ${taskStr} and model ${modelId}`);
-              }
             }
         }
 
@@ -507,6 +509,14 @@ async function executeSingleModelRequest(
         // If all projects for modelId failed in this attempt, check if we can failover on next attempt
         if (attempt < MAX_ATTEMPTS && lastActiveProjectError && isRateLimitOrQuotaError(lastActiveProjectError)) {
           console.warn(`${stageTag} Attempt ${attempt} failed for model ${modelId} with quota/transient error. Transitioning to attempt ${attempt + 1}...`);
+          const errMsg = lastActiveProjectError?.message?.toLowerCase() || '';
+          let backoffMs = 1500;
+          const retryMatch = errMsg.match(/retry in ([\d\.]+)s/i) || errMsg.match(/retry after ([\d\.]+)s/i);
+          if (retryMatch && retryMatch[1]) {
+            const s = parseFloat(retryMatch[1]);
+            if (!isNaN(s) && s > 0) backoffMs = Math.min(Math.ceil(s * 1000), 5000);
+          }
+          await new Promise(r => setTimeout(r, backoffMs));
           continue;
         }
 
@@ -868,6 +878,8 @@ export interface ProviderExecutionResult {
   model?: string;
   credentialUsed?: string;
 }
+
+export { taskExecutor, executeTask, type ExecuteTaskOptions, type ExecuteTaskResult } from './ai_infrastructure/task_executor';
 
 /**
  * Universal Provider Execution Gateway (Phase 7B & 7C Standard Provider Execution Contract)

@@ -262,6 +262,7 @@ async function runTelemetryTestSuite() {
   console.log('=====================================================');
   console.log('🎉 ALL PHASE 4.7 TELEMETRY & OBSERVABILITY TESTS PASSED!');
   console.log('=====================================================\n');
+  process.exit(0);
 }
 
 runTelemetryTestSuite().catch((err) => {
